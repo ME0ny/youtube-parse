@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <title>YouTube Рекомендации Парсер</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="container">
+        <h3>📹 YouTube Рекомендации Парсер</h3>
+
+        <!-- Управление -->
+        <section class="control-section">
+            <div class="input-group">
+                <label for="counterInput">Количество итераций:</label>
+                <input type="number" id="counterInput" value="10" min="1" max="100">
+            </div>
+
+            <!-- Добавим новую кнопку в button-group -->
+            <div class="button-group">
+                <button id="parseOnceBtn">📊 Спарсить сейчас</button>
+                <button id="startAnalysisBtn">▶️ Запустить анализ</button>
+                <button id="copyTableBtn">📋 Копировать таблицу</button>
+                <button id="clearTableBtn">🗑️ Очистить данные</button>
+                <button id="clearLogBtn">🧹 Очистить журнал</button> <!-- 👈 НОВАЯ КНОПКА -->
+            </div>
+        </section>
+
+        <!-- popup.html — замени блок импорта на этот -->
+
+        <h4 style="display: flex; align-items: center; gap: 8px;">
+            📥 Импорт данных (CSV/TSV)
+            <button id="toggleImportBtn" style="font-size: 12px; padding: 2px 8px; margin: 0;">🔽</button>
+        </h4>
+        <div id="importSection" style="margin-bottom: 16px; overflow: hidden; transition: max-height 0.3s ease;">
+            <textarea id="csvInput"
+                placeholder="Вставьте данные в формате CSV или TSV&#10;Название,ID,Просмотры,Канал,Исходное видео&#10;..."
+                rows="6" style="width: 100%; padding: 8px; font-family: monospace; font-size: 12px;"></textarea>
+            <button id="importDataBtn" style="margin-top: 8px; width: 100%;">📂 Загрузить данные</button>
+        </div>
+
+        <!-- Статус -->
+        <section class="status-section">
+            <div id="status" class="status">Готов к работе</div>
+        </section>
+
+        <!-- Журнал событий -->
+        <section class="log-section">
+            <h4>📋 Журнал событий</h4>
+            <div id="logContainer" class="log-container"></div>
+        </section>
+
+        <!-- Таблица данных -->
+        <section class="table-section">
+            <h4>📊 Спарсенные данные</h4>
+            <div id="tableContainer" class="table-container">
+                <table id="videosTable" class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Название</th>
+                            <th>ID</th>
+                            <th>Просмотры</th>
+                            <th>Канал</th>
+                            <th>Исходное видео</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <script src="../shared/logger.js"></script>
+    <script src="../shared/storage.js"></script>
+    <script type="module" src="popup.js"></script>
+</body>
+
+</html>

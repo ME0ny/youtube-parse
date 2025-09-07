@@ -1,0 +1,1059 @@
+
+=== START FILE: D:\разработка\youtube_scraber\background.js ===
+
+// background.js — с отправкой статусов в popup
+
+let isAnalysisRunning = false;
+let currentTabId = null;
+let totalIterations = 0;
+let currentIteration = 0;
+
+// Слушаем сообщения от popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "startAutoAnalysis") {
+        if (isAnalysisRunning) {
+            console.log("[Background] Анализ уже запущен");
+            sendStatusToPopup("⚠️ Анализ уже запущен");
+            return;
+        }
+
+        totalIterations = request.iterations;
+        currentIteration = 0;
+        isAnalysisRunning = true;
+
+        sendStatusToPopup(`🚀 Запуск анализа: ${totalIterations} итераций`);
+
+        // Получаем активную вкладку
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs.length === 0 || !tabs[0].id) {
+                console.error("[Background] Не удалось найти активную вкладку");
+                sendStatusToPopup("❌ Ошибка: активная вкладка не найдена");
+                isAnalysisRunning = false;
+                return;
+            }
+
+            currentTabId = tabs[0].id;
+            console.log(`[Background] Запуск анализа на вкладке ${currentTabId}`);
+            sendStatusToPopup(`✅ Активная вкладка найдена. Начинаем парсинг...`);
+
+            startAnalysisLoop();
+        });
+
+        return true;
+    }
+});
+
+async function startAnalysisLoop() {
+    while (currentIteration < totalIterations && isAnalysisRunning) {
+        currentIteration++;
+        const message = `🔁 Итерация ${currentIteration}/${totalIterations} начата...`;
+        console.log(`[Background] ${message}`);
+        sendStatusToPopup(message);
+
+        try {
+            // Шаг 1: Запускаем парсинг
+            const response = await sendMessageToTab(currentTabId, { action: "startFullParse" });
+            if (!response || response.status !== "success") {
+                throw new Error("Ошибка парсинга");
+            }
+
+            const newData = response.dataWithSource || [];
+            if (!Array.isArray(newData)) {
+                throw new Error("Данные не являются массивом");
+            }
+
+            sendStatusToPopup(`✅ Итерация ${currentIteration}: парсинг завершён, данных: ${newData.length}`);
+
+            // Шаг 2: Сохраняем данные в storage
+            const oldData = await getFromStorage('parsedVideos') || [];
+            const combinedData = [...oldData, ...newData];
+            await setToStorage({ parsedVideos: combinedData });
+
+            sendStatusToPopup(`💾 Итерация ${currentIteration}: данные сохранены в storage`);
+
+            // Шаг 3: Копируем таблицу в буфер обмена
+            await copyTableToClipboard(combinedData);
+            sendStatusToPopup(`📋 Итерация ${currentIteration}: таблица скопирована в буфер`);
+
+            // Шаг 4: Ждём перехода на новую страницу
+            await waitForPageNavigation(currentTabId);
+            sendStatusToPopup(`✅ Итерация ${currentIteration}: переход на новое видео выполнен`);
+
+            // Пауза перед следующей итерацией
+            await sleep(1000);
+
+        } catch (error) {
+            const errorMsg = `❌ Ошибка на итерации ${currentIteration}: ${error.message}`;
+            console.error(`[Background] ${errorMsg}`);
+            sendStatusToPopup(errorMsg);
+
+            // Перезагружаем страницу
+            sendStatusToPopup("🔄 Перезагружаем страницу...");
+            await chrome.tabs.reload(currentTabId);
+            await sleep(3000);
+        }
+    }
+
+    isAnalysisRunning = false;
+    const finalMessage = `🎉 Анализ завершён: ${currentIteration} итераций выполнено`;
+    console.log(`[Background] ${finalMessage}`);
+    sendStatusToPopup(finalMessage);
+}
+
+// 👇 НОВАЯ ФУНКЦИЯ: отправляет статус в popup
+function sendStatusToPopup(message) {
+    chrome.runtime.sendMessage({
+        type: "autoAnalysisStatus",
+        message: message
+    });
+}
+
+// Отправка сообщения в content script
+function sendMessageToTab(tabId, message) {
+    return new Promise((resolve) => {
+        chrome.tabs.sendMessage(tabId, message, (response) => {
+            if (chrome.runtime.lastError) {
+                resolve(null);
+            } else {
+                resolve(response);
+            }
+        });
+    });
+}
+
+// Ожидание перехода на новую страницу
+function waitForPageNavigation(tabId) {
+    return new Promise((resolve) => {
+        let attempts = 0;
+        const maxAttempts = 20;
+        const checkInterval = setInterval(async () => {
+            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            const currentTab = tabs.find(t => t.id === tabId);
+
+            if (!currentTab) {
+                clearInterval(checkInterval);
+                resolve();
+                return;
+            }
+
+            if (currentTab.status === 'complete') {
+                clearInterval(checkInterval);
+                resolve();
+                return;
+            }
+
+            attempts++;
+            if (attempts >= maxAttempts) {
+                clearInterval(checkInterval);
+                resolve();
+            }
+        }, 500);
+    });
+}
+
+// Чтение из storage
+function getFromStorage(key) {
+    return new Promise((resolve) => {
+        chrome.storage.local.get([key], (result) => {
+            resolve(result[key]);
+        });
+    });
+}
+
+// Запись в storage
+function setToStorage(data) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set(data, () => {
+            resolve();
+        });
+    });
+}
+
+// Копирование таблицы в буфер обмена
+async function copyTableToClipboard(data) {
+    const headers = ["Название", "ID", "Просмотры", "Канал", "Исходное видео"];
+    const rows = data.map(video => [
+        video.title || '',
+        video.videoId || '',
+        video.views || '',
+        video.channelName || '',
+        video.sourceVideoId || ''
+    ]);
+
+    const tsvContent = [
+        headers.join('\t'),
+        ...rows.map(row => row.join('\t'))
+    ].join('\n');
+
+    // Создаём невидимый элемент для копирования
+    const textArea = document.createElement('textarea');
+    textArea.value = tsvContent;
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textArea);
+}
+
+// Вспомогательная функция задержки
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+=== END FILE: D:\разработка\youtube_scraber\background.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\manifest.json ===
+
+{
+    "manifest_version": 3,
+    "name": "Парсер рекомендаций",
+    "version": "1.1",
+    "description": "Расширение для парсинга рекомендаций из видео YouTube.",
+    "permissions": [
+        "activeTab",
+        "scripting",
+        "storage",
+        "tabs"
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "icons/icon16.png"
+        }
+    },
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "content/utils.js",
+                "content/parser.js",
+                "content/scraper.js",
+                "content/scroller.js",
+                "content/navigator.js",
+                "content/content.js"
+            ]
+        }
+    ],
+    "icons": {
+        "16": "icons/icon16.png"
+    }
+}
+
+=== END FILE: D:\разработка\youtube_scraber\manifest.json ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\popup.css ===
+
+body {
+    width: 500px;
+    padding: 15px;
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+}
+
+button {
+    margin: 5px 5px 10px 0;
+    padding: 8px 12px;
+    cursor: pointer;
+}
+
+#status {
+    margin: 10px 0;
+    font-size: 12px;
+}
+
+/* Стили таблицы */
+#videosTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+#videosTable th,
+#videosTable td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+#videosTable th {
+    background-color: #f5f5f5;
+    font-weight: bold;
+}
+
+#videosTable tr:nth-child(even) {
+    background-color: #fafafa;
+}
+
+#videosTable td {
+    vertical-align: top;
+}
+
+#videosTable td:first-child {
+    max-width: 180px;
+    word-wrap: break-word;
+}
+
+=== END FILE: D:\разработка\youtube_scraber\popup.css ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\popup.html ===
+
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Video Highlighter & Scraper</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <h3>Анализ видео</h3>
+
+    <!-- 🔢 Счётчик -->
+    <div style="margin: 10px 0;">
+        <label for="counterInput">Счётчик: </label>
+        <input type="number" id="counterInput" value="10" min="1" style="width: 60px; padding: 4px;">
+    </div>
+
+    <!-- 🎮 Кнопки управления -->
+    <button id="highlightBtn">📊 Спарсить данные</button>
+    <button id="startAnalysisBtn">▶️ Начать анализ</button> <!-- 👈 НОВАЯ КНОПКА -->
+    <button id="copyTableBtn">💾 Сохранить таблицу в буфер обмена</button> <!-- 👈 НОВАЯ КНОПКА -->
+    <button id="clearTableBtn">🗑️ Очистить таблицу</button>
+
+    <div id="status"></div>
+    <!-- 👇 Блок логирования -->
+    <div
+        style="margin-top: 20px; padding: 10px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px; max-height: 200px; overflow-y: auto;">
+        <h4 style="margin: 0 0 10px 0; font-size: 14px;">📋 Журнал операций</h4>
+        <div id="logContainer" style="font-size: 12px; line-height: 1.4; color: #333;"></div>
+    </div>
+    <div id="tableContainer" style="margin-top: 15px; max-height: 300px; overflow-y: auto; display: none;">
+        <table id="videosTable">
+            <thead>
+                <tr>
+                    <th>Название</th>
+                    <th>ID</th>
+                    <th>Просмотры</th>
+                    <th>Канал</th>
+                    <th>Исходное видео</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                <!-- Сюда вставим строки -->
+            </tbody>
+        </table>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
+
+=== END FILE: D:\разработка\youtube_scraber\popup.html ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\popup.js ===
+
+// popup.js — исправлено: sourceVideoId берётся из video.sourceVideoId
+
+function updateStatus(message, isError = false) {
+    const statusDiv = document.getElementById('status');
+    statusDiv.textContent = message;
+    statusDiv.style.color = isError ? 'red' : 'green';
+}
+
+function showTable() {
+    document.getElementById('tableContainer').style.display = 'block';
+}
+
+function hideTable() {
+    document.getElementById('tableContainer').style.display = 'none';
+}
+
+function renderTable(data) {
+    const tableBody = document.getElementById('tableBody');
+    tableBody.innerHTML = '';
+
+    if (!data || data.length === 0) {
+        updateStatus("Видео не найдены", true);
+        hideTable();
+        return;
+    }
+
+    data.forEach(video => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${escapeHtml(video.title)}</td>
+            <td>${video.videoId}</td>
+            <td>${video.views}</td>
+            <td>${escapeHtml(video.channelName)}</td>
+            <td>${video.sourceVideoId || 'unknown'}</td>
+        `;
+        tableBody.appendChild(row);
+    });
+
+    showTable();
+    updateStatus(`✅ Всего видео: ${data.length}`);
+
+    // 👇 ВСТАВЬ КОД АЛГОРИТМА ЗДЕСЬ
+    function findNextVideoToParse(videos) {
+        if (!videos || videos.length === 0) return null;
+
+        const channelGroups = {};
+        videos.forEach(video => {
+            if (!channelGroups[video.channelName]) {
+                channelGroups[video.channelName] = [];
+            }
+            channelGroups[video.channelName].push(video);
+        });
+
+        let smallestChannel = null;
+        let minCount = Infinity;
+
+        for (const [channel, videosInChannel] of Object.entries(channelGroups)) {
+            if (videosInChannel.length < minCount) {
+                minCount = videosInChannel.length;
+                smallestChannel = channel;
+            }
+        }
+
+        if (!smallestChannel) return null;
+
+        const candidateVideos = channelGroups[smallestChannel];
+
+        for (const video of candidateVideos) {
+            if (video.videoId !== video.sourceVideoId) {
+                return video.videoId;
+            }
+        }
+
+        return candidateVideos[0]?.videoId || null;
+    }
+
+    const nextVideoId = findNextVideoToParse(data);
+    if (nextVideoId) {
+        console.log(`[Next Target] ID видео для следующего парсинга: ${nextVideoId}`);
+        updateStatus(`✅ Готово! Следующее видео: ${nextVideoId}`, false);
+    } else {
+        console.log("[Next Target] Не удалось найти следующее видео");
+        updateStatus("⚠️ Не удалось найти следующее видео", true);
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Загружаем сохранённые данные при открытии popup
+document.addEventListener('DOMContentLoaded', () => {
+    chrome.storage.local.get(['parsedVideos'], (result) => {
+        const data = result.parsedVideos || [];
+        if (data.length > 0) {
+            renderTable(data);
+            updateStatus(`Загружено ${data.length} видео`);
+        } else {
+            hideTable();
+            updateStatus("Нажмите 'Спарсить данные' для начала");
+        }
+    });
+});
+
+document.getElementById('highlightBtn').addEventListener('click', async () => {
+    updateStatus("🚀 Запускаем скроллинг и сбор данных...", false);
+
+    let queryOptions = { active: true, currentWindow: true };
+    let [tab] = await chrome.tabs.query(queryOptions);
+
+    if (!tab || !tab.id) {
+        updateStatus("❌ Ошибка: активная вкладка не найдена", true);
+        return;
+    }
+
+    if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('about:'))) {
+        updateStatus("❌ Ошибка: нельзя работать на системных страницах", true);
+        return;
+    }
+
+    chrome.tabs.sendMessage(
+        tab.id,
+        { action: "startFullParse" },
+        (response) => {
+            if (chrome.runtime.lastError) {
+                if (chrome.runtime.lastError.message.includes("Could not establish connection")) {
+                    updateStatus("⚠️ Content script не готов. Обновите страницу YouTube и попробуйте снова.", true);
+                } else {
+                    updateStatus("Ошибка: " + chrome.runtime.lastError.message, true);
+                }
+                return;
+            }
+
+            if (response && response.status === "success") {
+                // 👇 ИСПРАВЛЕНО: Берём данные из response.dataWithSource
+                const newData = response.dataWithSource || [];
+                if (!Array.isArray(newData)) {
+                    updateStatus("❌ Ошибка: данные не являются массивом", true);
+                    return;
+                }
+
+                chrome.storage.local.get(['parsedVideos'], (result) => {
+                    const oldData = result.parsedVideos || [];
+                    const combinedData = [...oldData, ...newData];
+
+                    chrome.storage.local.set({ parsedVideos: combinedData }, () => {
+                        console.log("[Popup] Данные сохранены (дополнены)");
+                        renderTable(combinedData);
+                    });
+                });
+            } else {
+                updateStatus(response?.message || "Неизвестная ошибка", true);
+            }
+        }
+    );
+});
+
+// Очищает таблицу и storage
+document.getElementById('clearTableBtn').addEventListener('click', () => {
+    console.log("clear_table");
+    // 1. Очищаем таблицу на экране
+    const tableBody = document.getElementById('tableBody');
+    tableBody.innerHTML = '';
+    hideTable();
+
+    // 2. Удаляем данные из storage
+    chrome.storage.local.remove(['parsedVideos'], () => {
+        if (chrome.runtime.lastError) {
+            updateStatus("Ошибка при очистке: " + chrome.runtime.lastError.message, true);
+        } else {
+            // 3. ЯВНО перерисовываем пустую таблицу
+            renderTable([]);
+            updateStatus("✅ Таблица очищена", false);
+        }
+    });
+});
+
+// 👇 Обработчик кнопки "Сохранить таблицу в буфер обмена"
+document.getElementById('copyTableBtn').addEventListener('click', () => {
+    chrome.storage.local.get(['parsedVideos'], (result) => {
+        const data = result.parsedVideos || [];
+
+        if (data.length === 0) {
+            updateStatus("❌ Нет данных для копирования", true);
+            return;
+        }
+
+        // Заголовки столбцов
+        const headers = [
+            "Название",
+            "ID",
+            "Просмотры",
+            "Канал",
+            "Исходное видео"
+        ];
+
+        // Формируем строки TSV
+        const rows = data.map(video => [
+            video.title || '',
+            video.videoId || '',
+            video.views || '',
+            video.channelName || '',
+            video.sourceVideoId || ''
+        ]);
+
+        // Объединяем в одну строку
+        const tsvContent = [
+            headers.join('\t'),
+            ...rows.map(row => row.join('\t'))
+        ].join('\n');
+
+        // Копируем в буфер обмена
+        navigator.clipboard.writeText(tsvContent)
+            .then(() => {
+                updateStatus("✅ Таблица скопирована в буфер обмена", false);
+            })
+            .catch(err => {
+                console.error("Ошибка копирования:", err);
+                updateStatus("❌ Не удалось скопировать таблицу", true);
+            });
+    });
+});
+
+// 👇 НОВАЯ ФУНКЦИЯ: добавляет сообщение в журнал
+function logMessage(message, isError = false) {
+    const logContainer = document.getElementById('logContainer');
+    const entry = document.createElement('div');
+    entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    entry.style.color = isError ? 'red' : 'black';
+    entry.style.padding = '2px 0';
+    entry.style.borderBottom = '1px solid #eee';
+
+    logContainer.appendChild(entry);
+    logContainer.scrollTop = logContainer.scrollHeight; // Автопрокрутка вниз
+}
+
+// 👇 Обработчик кнопки "Начать анализ" — просто отправляет команду в background
+document.getElementById('startAnalysisBtn').addEventListener('click', async () => {
+    const counterInput = document.getElementById('counterInput');
+    const iterations = parseInt(counterInput.value);
+
+    if (isNaN(iterations) || iterations < 1) {
+        updateStatus("❌ Введите корректное число итераций (>=1)", true);
+        return;
+    }
+
+    updateStatus(`▶️ Запуск анализа: ${iterations} итераций...`, false);
+    logMessage(`🚀 Запуск фонового анализа: ${iterations} итераций`);
+
+    // Отправляем команду в background
+    chrome.runtime.sendMessage({
+        action: "startAutoAnalysis",
+        iterations: iterations
+    });
+
+    // Сообщаем пользователю, что можно закрыть popup
+    updateStatus(`✅ Анализ запущен в фоне. Можно закрыть popup.`, false);
+    logMessage(`✅ Анализ запущен в фоне. Можно закрыть popup.`);
+});
+
+// Слушаем статусы от scroller.js
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.type === "scrollerStatus") {
+        updateStatus(request.message);
+    }
+
+    if (request.type === "autoAnalysisStatus") {
+        logMessage(request.message);
+    }
+});
+
+=== END FILE: D:\разработка\youtube_scraber\popup.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\content\content.js ===
+
+// content/content.js
+
+function getCurrentVideoId() {
+    // 1. Пробуем получить из URL
+    const url = new URL(window.location.href);
+    let videoId = url.searchParams.get('v');
+
+    // 2. Если нет — пробуем найти в DOM
+    if (!videoId) {
+        // Попытка 1: из <link rel="canonical">
+        const canonical = document.querySelector('link[rel="canonical"]');
+        if (canonical && canonical.href.includes('/watch?v=')) {
+            const canonicalUrl = new URL(canonical.href);
+            videoId = canonicalUrl.searchParams.get('v');
+        }
+
+        // Попытка 2: из URL первой карточки видео
+        if (!videoId) {
+            const firstVideoLink = document.querySelector('a[href*="/watch?v="]');
+            if (firstVideoLink) {
+                try {
+                    const linkUrl = new URL(firstVideoLink.href, window.location.origin);
+                    videoId = linkUrl.searchParams.get('v');
+                } catch (e) {
+                    console.warn("[Parser] Не удалось распарсить URL видео");
+                }
+            }
+        }
+
+        // Попытка 3: из URL Shorts
+        if (!videoId && window.location.pathname.startsWith('/shorts/')) {
+            const pathParts = window.location.pathname.split('/');
+            videoId = pathParts[2];
+        }
+    }
+
+    return videoId || 'unknown';
+}
+
+// 👇 НОВОЕ: Функция поиска следующего видео (копия из popup.js, но для content.js)
+function findNextVideoToParse(videos) {
+    if (!videos || videos.length === 0) return null;
+
+    const channelGroups = {};
+    videos.forEach(video => {
+        if (!channelGroups[video.channelName]) {
+            channelGroups[video.channelName] = [];
+        }
+        channelGroups[video.channelName].push(video);
+    });
+
+    let smallestChannel = null;
+    let minCount = Infinity;
+
+    for (const [channel, videosInChannel] of Object.entries(channelGroups)) {
+        if (videosInChannel.length < minCount) {
+            minCount = videosInChannel.length;
+            smallestChannel = channel;
+        }
+    }
+
+    if (!smallestChannel) return null;
+
+    const candidateVideos = channelGroups[smallestChannel];
+
+    for (const video of candidateVideos) {
+        if (video.videoId !== video.sourceVideoId) {
+            return video.videoId;
+        }
+    }
+
+    return candidateVideos[0]?.videoId || null;
+}
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "startFullParse") {
+        console.log("[Content] Запуск полного парсинга");
+
+        const currentVideoId = getCurrentVideoId();
+        console.log(`[Content] Определён sourceVideoId: ${currentVideoId}`);
+
+        window.videoScroller.scrollSixTimes().then(() => {
+            const allCards = window.videoParser.parse();
+            const rawData = window.videoScraper.scrape(allCards);
+
+            const dataWithSource = rawData.map(item => ({
+                ...item,
+                sourceVideoId: currentVideoId
+            }));
+
+            // 👇 Отправляем данные в popup
+            sendResponse({ status: "success", dataWithSource });
+
+            // 👇 НОВОЕ: Определяем nextVideoId и переходим по нему
+            const nextVideoId = findNextVideoToParse(dataWithSource);
+            if (nextVideoId && window.videoNavigator?.navigate) {
+                console.log(`[Content] Автоматический переход на видео: ${nextVideoId}`);
+                window.videoNavigator.navigate(nextVideoId);
+            } else {
+                console.log("[Content] Не удалось определить nextVideoId или навигатор недоступен");
+            }
+        });
+
+        return true;
+    }
+
+    if (request.action === "removeHighlights") {
+        if (typeof window.videoParser?.removeHighlights === 'function') {
+            window.videoParser.removeHighlights();
+            sendResponse({ status: "success", message: "Подсветка удалена" });
+        } else {
+            sendResponse({ status: "error", message: "videoParser.removeHighlights не найден" });
+        }
+    }
+
+    return true;
+});
+
+
+
+=== END FILE: D:\разработка\youtube_scraber\content\content.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\content\navigator.js ===
+
+// content/navigator.js — отвечает за навигацию по YouTube
+
+function navigateToVideo(videoId) {
+    if (!videoId || videoId === 'unknown') {
+        console.warn("[Navigator] Не удалось перейти: videoId не указан");
+        return false;
+    }
+
+    const targetUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    console.log(`[Navigator] Переход на: ${targetUrl}`);
+
+    // Переходим в текущей вкладке
+    window.location.href = targetUrl;
+    return true;
+}
+
+// Экспортируем
+window.videoNavigator = {
+    navigate: navigateToVideo
+};
+
+=== END FILE: D:\разработка\youtube_scraber\content\navigator.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\content\parser.js ===
+
+// content/parser.js — подсвечивает новые видео при ручном скролле
+
+let observer = null;
+
+function highlightVideoCards(cards) {
+    cards.forEach(el => {
+        if (isAlreadyHighlightedOrHasHighlightedParent(el)) return;
+        highlightElement(el);
+    });
+}
+
+function isAlreadyHighlightedOrHasHighlightedParent(el) {
+    if (el.classList.contains('video-highlighted')) return true;
+    let parent = el.parentElement;
+    while (parent) {
+        if (parent.classList?.contains('video-highlighted')) return true;
+        parent = parent.parentElement;
+    }
+    return false;
+}
+
+function highlightElement(el) {
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+        position: 'absolute',
+        border: '3px solid red',
+        pointerEvents: 'none',
+        zIndex: '999999',
+        borderRadius: '8px',
+        top: '0', left: '0', width: '100%', height: '100%'
+    });
+
+    if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+    el.style.overflow = 'visible';
+    el.appendChild(box);
+    el.classList.add('video-highlighted');
+}
+
+function parseInitialCards() {
+    const cards = window.videoUtils.getVideoCards();
+    highlightVideoCards(cards);
+    console.log(`[Parser] Найдено и подсвечено ${cards.length} видео`);
+    startObserver(); // 👈 Запускаем наблюдатель за новыми видео
+    return cards;
+}
+
+function startObserver() {
+    if (observer) return;
+
+    observer = new MutationObserver((mutations) => {
+        mutations.forEach(mutation => {
+            mutation.addedNodes.forEach(node => {
+                if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+                // Если добавленный узел — карточка видео
+                if (node.matches && node.matches('.yt-lockup-view-model')) {
+                    if (!shouldSkipElement(node) && !isAlreadyHighlightedOrHasHighlightedParent(node)) {
+                        highlightElement(node);
+                        console.log("[Parser] ✨ Подсвечена новая карточка при ручном скролле");
+                    }
+                }
+
+                // Ищем карточки внутри добавленного узла
+                if (node.querySelectorAll) {
+                    const newCards = Array.from(node.querySelectorAll('.yt-lockup-view-model')).filter(el =>
+                        !shouldSkipElement(el) && !isAlreadyHighlightedOrHasHighlightedParent(el)
+                    );
+                    highlightVideoCards(newCards);
+                    if (newCards.length > 0) {
+                        console.log(`[Parser] ✨ Подсвечено ${newCards.length} новых карточек внутри добавленного блока`);
+                    }
+                }
+            });
+        });
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+
+    console.log("[Parser] 👁️ Наблюдатель за новыми карточками запущен");
+}
+
+// Функция фильтрации плейлистов (копия из utils, но можно вынести в utils позже)
+function shouldSkipElement(el) {
+    return (
+        el.classList.contains('yt-lockup-view-model--collection-stack-2') ||
+        el.classList.contains('yt-lockup-view-model--collection') ||
+        !!el.querySelector('yt-collection-thumbnail-view-model') ||
+        !!el.querySelector('yt-collections-stack') ||
+        (el.querySelector('a[href*="/watch"]')?.href.includes('list=PL'))
+    );
+}
+
+window.videoParser = {
+    parse: parseInitialCards,
+    removeHighlights: function () {
+        if (observer) {
+            observer.disconnect();
+            observer = null;
+        }
+        document.querySelectorAll('.video-highlighted').forEach(el => {
+            const boxes = el.querySelectorAll('div[style*="border: 3px solid red"]');
+            boxes.forEach(b => b.remove());
+            el.classList.remove('video-highlighted');
+        });
+    }
+};
+
+=== END FILE: D:\разработка\youtube_scraber\content\parser.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\content\scraper.js ===
+
+// content/scraper.js — ИСПРАВЛЕНО: возвращаем рабочую логику извлечения названия канала
+
+function scrapeDataFromCards(cards) {
+    return cards.map(el => {
+        try {
+            // 1. Название видео
+            const titleElement = el.querySelector('.yt-lockup-metadata-view-model__title');
+            const title = titleElement?.textContent?.trim() || 'Без названия';
+
+            // 2. ID видео из ссылки
+            const linkElement = el.querySelector('a[href*="/watch?v="]');
+            let videoId = 'Не найден';
+            if (linkElement) {
+                const url = new URL(linkElement.href, window.location.origin);
+                videoId = url.searchParams.get('v') || 'Не найден';
+            }
+
+            // 3. Количество просмотров
+            let views = 'Неизвестно';
+            const metadataRows = el.querySelectorAll('.yt-content-metadata-view-model__metadata-row');
+            metadataRows.forEach(row => {
+                const text = row.textContent || '';
+                if (text.includes('views') || text.includes('просмотров') || text.includes('view')) {
+                    views = text
+                        .split('•')[0]
+                        .replace(/\s*views?\s*/i, '')
+                        .trim();
+                }
+            });
+
+            // 4. Название канала — ✅ ВОЗВРАЩАЕМ РАБОЧУЮ ЛОГИКУ
+            let channelName = 'Неизвестен';
+
+            const firstMetadataRow = el.querySelector('.yt-content-metadata-view-model__metadata-row');
+            if (firstMetadataRow) {
+                // Ищем первый прямой <span> без иконки внутри
+                const firstTextSpan = Array.from(firstMetadataRow.children).find(child =>
+                    child.tagName === 'SPAN' && !child.querySelector('.ytIconWrapperHost')
+                );
+
+                if (firstTextSpan) {
+                    channelName = firstTextSpan.textContent.trim() || 'Неизвестен';
+                } else {
+                    // Fallback: текст до разделителя " • "
+                    const fullText = firstMetadataRow.textContent || '';
+                    const grayPartIndex = fullText.indexOf(' • ');
+                    if (grayPartIndex > -1) {
+                        channelName = fullText.substring(0, grayPartIndex).trim();
+                    } else {
+                        channelName = fullText.trim();
+                    }
+                }
+            }
+
+            return { title, videoId, views, channelName };
+        } catch (err) {
+            console.warn('[Scraper] Ошибка при парсинге:', err);
+            return { title: 'Ошибка', videoId: '', views: '', channelName: '' };
+        }
+    });
+}
+
+window.videoScraper = {
+    scrape: scrapeDataFromCards
+};
+
+=== END FILE: D:\разработка\youtube_scraber\content\scraper.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\content\scroller.js ===
+
+// content/scroller.js — ГАРАНТИРОВАННО скроллит страницу 6 раз
+
+function scrollSixTimes() {
+    return new Promise((resolve) => {
+        const scrollCount = 8;
+        const delayMs = 3000; // 2 секунды между скроллами
+        const scrollStep = 2500; // Скроллим на 1000px за раз
+        let currentScroll = 0;
+
+        function sendStatus(message) {
+            chrome.runtime.sendMessage({ type: "scrollerStatus", message });
+        }
+
+        async function performScroll() {
+            if (currentScroll >= scrollCount) {
+                sendStatus("✅ Скроллинг завершён. Запускаем парсинг...");
+                resolve();
+                return;
+            }
+
+            currentScroll++;
+            sendStatus(`⏳ Скролл ${currentScroll}/${scrollCount}...`);
+
+            // ФИКС: Реально скроллим страницу вниз
+            window.scrollBy(0, scrollStep);
+
+            // Ждём 2 секунды перед следующим скроллом
+            setTimeout(performScroll, delayMs);
+        }
+
+        sendStatus("🚀 Начинаем скроллинг...");
+        performScroll();
+    });
+}
+
+window.videoScroller = {
+    scrollSixTimes
+};
+
+=== END FILE: D:\разработка\youtube_scraber\content\scroller.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube_scraber\content\utils.js ===
+
+// content/utils.js
+
+function getVideoCards() {
+    return Array.from(document.querySelectorAll('.yt-lockup-view-model')).filter(el => {
+        return !(
+            el.classList.contains('yt-lockup-view-model--collection-stack-2') ||
+            el.classList.contains('yt-lockup-view-model--collection') ||
+            !!el.querySelector('yt-collection-thumbnail-view-model') ||
+            !!el.querySelector('yt-collections-stack') ||
+            (el.querySelector('a[href*="/watch"]')?.href.includes('list=PL'))
+        );
+    });
+}
+
+function getTargetContainer() {
+    return document.querySelector('ytd-item-section-renderer');
+}
+
+window.videoUtils = {
+    getVideoCards,
+    getTargetContainer
+};
+
+=== END FILE: D:\разработка\youtube_scraber\content\utils.js ===
+
+--------------------------------------------------------------------------------
