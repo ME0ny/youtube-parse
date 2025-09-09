@@ -8,7 +8,7 @@
  * @param {Function} onProgress - callback для обновления прогресса
  * @returns {Promise<void>}
  */
-function scrollNTimes(count = 8, delayMs = 3000, step = 2000, onProgress = null) {
+function scrollNTimes(count = 16, delayMs = 1500, step = 1000, onProgress = null) {
     return new Promise((resolve) => {
         let current = 0;
 

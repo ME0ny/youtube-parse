@@ -27,9 +27,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.log(`[Content] Текущее видео: ${currentVideoId}`);
 
         window.VideoScroller.scrollNTimes(
-            8,
-            3000,
-            2500,
+            16,
+            1500,
+            1250,
             (progress) => {
                 if (progress.message) {
                     chrome.runtime.sendMessage({

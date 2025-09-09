@@ -179,6 +179,7 @@ async function selectNextVideoId(videos, currentVideoId = null, mode = 'smart') 
     for (let i = 0; i < Math.min(10, sortedChannels.length); i++) {
         const [channelName, videoList] = sortedChannels[i];
 
+        // ✅ Проверяем: не текущее И не было исходным
         for (const video of videoList) {
             if (
                 video.videoId !== currentVideoId &&
@@ -188,6 +189,7 @@ async function selectNextVideoId(videos, currentVideoId = null, mode = 'smart') 
             }
         }
 
+        // ✅ Fallback: просто не текущее
         for (const video of videoList) {
             if (video.videoId !== currentVideoId) {
                 return video.videoId;
@@ -195,6 +197,17 @@ async function selectNextVideoId(videos, currentVideoId = null, mode = 'smart') 
         }
     }
 
+    // ✅ Финальный fallback: первое не текущее из всей таблицы
+    for (const video of videos) {
+        if (
+            video.videoId !== currentVideoId &&
+            video.videoId !== video.sourceVideoId
+        ) {
+            return video.videoId;
+        }
+    }
+
+    // ✅ Абсолютный fallback
     for (const video of videos) {
         if (video.videoId !== currentVideoId) {
             return video.videoId;
