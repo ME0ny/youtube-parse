@@ -84,7 +84,7 @@ class PopupController {
         this.logContainer.scrollTop = this.logContainer.scrollHeight;
     }
 
-    // popup/popup.js — добавь этот метод в класс
+    // popup/popup.js — обновлённый renderTable
 
     renderTable(data) {
         const tableBody = document.getElementById('tableBody');
@@ -107,6 +107,12 @@ class PopupController {
       <td>${video.views}</td>
       <td>${this.escapeHtml(video.channelName)}</td>
       <td>${video.sourceVideoId || 'unknown'}</td>
+      <td>
+        ${video.thumbnailUrl ?
+                    `<img src="${video.thumbnailUrl}" alt="Thumbnail" style="width: 80px; height: 45px; object-fit: cover;">` :
+                    '—'
+                }
+      </td>
     `;
             tableBody.appendChild(row);
         });
@@ -255,7 +261,7 @@ class PopupController {
             }
 
             // Заголовки
-            const headers = ["Название", "ID", "Просмотры", "Канал", "Исходное видео"];
+            const headers = ["Название", "ID", "Просмотры", "Канал", "Исходное видео", "Миниатюра"];
 
             // Формируем строки
             const rows = data.map(video => [
@@ -263,7 +269,8 @@ class PopupController {
                 video.videoId || '',
                 video.views || '',
                 video.channelName || '',
-                video.sourceVideoId || ''
+                video.sourceVideoId || '',
+                video.thumbnailUrl || ''
             ]);
 
             // Объединяем в TSV
@@ -350,24 +357,22 @@ class PopupController {
         const lines = text.split(/\r\n|\n/);
         if (lines.length === 0) return [];
 
-        // Определяем разделитель: если есть таб — TSV, иначе CSV
         const firstLine = lines[0];
-        const delimiter = firstLine.includes('\t') ? '\t' : ';';
+        const delimiter = firstLine.includes('\t') ? '\t' : ',';
 
-        // Парсим заголовки
+        // 👇 Обновлённые заголовки
         const headers = firstLine.split(delimiter).map(h => h.trim().toLowerCase());
 
-        // Проверяем обязательные поля
-        const requiredFields = ['название', 'id', 'просмотры', 'канал', 'исходное видео'];
+        const requiredFields = ['название', 'id', 'просмотры', 'канал', 'исходное видео', 'миниатюра'];
         const fieldMap = {
             'название': 'title',
             'id': 'videoId',
             'просмотры': 'views',
             'канал': 'channelName',
-            'исходное видео': 'sourceVideoId'
+            'исходное видео': 'sourceVideoId',
+            'миниатюра': 'thumbnailUrl' // 👈 НОВОЕ ПОЛЕ
         };
 
-        // Находим индексы нужных колонок
         const indices = {};
         requiredFields.forEach(field => {
             const index = headers.findIndex(h => h === field);
@@ -377,7 +382,6 @@ class PopupController {
             indices[field] = index;
         });
 
-        // Парсим строки данных
         const data = [];
         for (let i = 1; i < lines.length; i++) {
             if (!lines[i].trim()) continue;

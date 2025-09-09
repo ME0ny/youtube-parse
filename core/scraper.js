@@ -6,6 +6,8 @@
  * @param {string} sourceVideoId - ID текущего видео (источника)
  * @returns {Object[]} массив объектов с данными
  */
+// core/scraper.js — обновлённая функция scrapeCards
+
 function scrapeCards(cards, sourceVideoId = 'unknown') {
     return cards.map(el => {
         try {
@@ -58,12 +60,20 @@ function scrapeCards(cards, sourceVideoId = 'unknown') {
                 }
             }
 
+            // 5. 👇 НОВОЕ: Thumbnail URL
+            let thumbnailUrl = '';
+            const thumbnailImg = el.querySelector('yt-thumbnail-view-model img');
+            if (thumbnailImg) {
+                thumbnailUrl = thumbnailImg.src || '';
+            }
+
             return {
                 title,
                 videoId,
                 views,
                 channelName,
-                sourceVideoId // 👈 добавляем источник!
+                sourceVideoId,
+                thumbnailUrl // 👈 НОВОЕ ПОЛЕ
             };
         } catch (err) {
             console.warn('[Scraper] Ошибка при парсинге карточки:', err);
@@ -72,7 +82,8 @@ function scrapeCards(cards, sourceVideoId = 'unknown') {
                 videoId: '',
                 views: '',
                 channelName: '',
-                sourceVideoId
+                sourceVideoId,
+                thumbnailUrl: ''
             };
         }
     });
