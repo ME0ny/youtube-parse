@@ -25,6 +25,7 @@ class PopupController {
         this.counterInput = document.getElementById('counterInput');
         this.startAnalysisBtn = document.getElementById('startAnalysisBtn');
         this.selectionModeRadios = document.querySelectorAll('input[name="selectionMode"]');
+        this.stopAnalysisBtn = document.getElementById('stopAnalysisBtn');
     }
 
     bindEvents() {
@@ -35,11 +36,23 @@ class PopupController {
         this.importDataBtn.addEventListener('click', () => this.handleImportData());
         this.toggleImportBtn.addEventListener('click', () => this.toggleImportSection());
         this.startAnalysisBtn.addEventListener('click', () => this.handleStartAnalysis());
+        this.stopAnalysisBtn.addEventListener('click', () => this.handleStopAnalysis());
         this.selectionModeRadios.forEach(radio => {
             radio.addEventListener('change', () => this.saveSelectionMode());
         });
         // Слушаем новые логи
         chrome.runtime.onMessage.addListener((request) => {
+            if (request.type === 'analysisStatus') {
+                if (request.status === 'started') {
+                    this.startAnalysisBtn.disabled = true;
+                    this.stopAnalysisBtn.style.display = 'inline-block';
+                    this.updateStatus("🔄 Анализ запущен...", false);
+                } else if (request.status === 'stopped') {
+                    this.startAnalysisBtn.disabled = false;
+                    this.stopAnalysisBtn.style.display = 'none';
+                    this.updateStatus("⏹️ Анализ остановлен", false);
+                }
+            }
             if (request.type === 'newLog' && request.log) {
                 this.renderLogEntry(request.log);
             }
@@ -245,6 +258,18 @@ class PopupController {
                 timestamp: Date.now()
             });
         }
+    }
+
+    handleStopAnalysis() {
+        this.renderLogEntry({
+            message: "📤 Отправка команды на остановку анализа...",
+            level: "info",
+            timestamp: Date.now()
+        });
+
+        chrome.runtime.sendMessage({
+            action: "stopAutoAnalysis"
+        });
     }
 
     async handleCopyTable() {

@@ -5,6 +5,7 @@
 const LOG_STORAGE_KEY = 'appLogs';
 const MAX_LOGS = 500;
 let targetTabId = null;
+let stopRequested = false;
 
 const UNAVAILABLE_VIDEO_IDS_KEY = 'unavailableVideoIds';
 
@@ -12,6 +13,24 @@ const UNAVAILABLE_VIDEO_IDS_KEY = 'unavailableVideoIds';
  * Получает список недоступных videoId из хранилища.
  * @returns {Promise<Set<string>>} Множество недоступных ID.
  */
+
+function stopAutoAnalysis() {
+    if (isAnalysisRunning) {
+        stopRequested = true;
+        log("⏹️ Получен запрос на остановку анализа", "warn");
+        broadcastAnalysisStatus('stopped');
+    } else {
+        log("⚠️ Анализ не запущен, остановка не требуется", "info");
+    }
+}
+
+function broadcastAnalysisStatus(status) {
+    chrome.runtime.sendMessage({
+        type: "analysisStatus",
+        status: status
+    });
+}
+
 async function getUnavailableVideoIds() {
     return new Promise((resolve) => {
         chrome.storage.local.get([UNAVAILABLE_VIDEO_IDS_KEY], (result) => {
@@ -152,6 +171,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "clearLogs") {
         clearLogs(); // background очищает storage и рассылает logsCleared
         return;
+    }
+
+    if (request.action === "stopAutoAnalysis") {
+        stopAutoAnalysis();
+        return true;
     }
 
     if (request.action === "clearTable") {
@@ -655,14 +679,11 @@ let isAnalysisRunning = false;
 let currentIteration = 0;
 let totalIterations = 0;
 
+// background.js — обновлённая startAutoAnalysis
+
 async function startAutoAnalysis(iterations, tabId) {
     if (isAnalysisRunning) {
         await log("⚠️ Анализ уже запущен", "warn");
-        return;
-    }
-
-    if (!tabId) {
-        await log("❌ Не передан tabId для автоанализа", "error");
         return;
     }
 
@@ -670,13 +691,14 @@ async function startAutoAnalysis(iterations, tabId) {
     isAnalysisRunning = true;
     totalIterations = iterations;
     currentIteration = 0;
+    stopRequested = false; // 👈 Сбрасываем флаг при запуске
 
     await log(`🚀 Запуск автоанализа: ${totalIterations} итераций на вкладке ${targetTabId}`, "info");
+    broadcastAnalysisStatus('started'); // 👈 Сообщаем popup, что анализ начался
 
     try {
         // === ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА ДОСТУПНОСТИ НАЧАЛЬНОГО ВИДЕО ===
         await log(`🔒 Предварительная проверка доступности начального видео...`, "info");
-        // Получаем текущую вкладку для проверки
         const tabs = await chrome.tabs.query({});
         const targetTab = tabs.find(t => t.id === targetTabId);
         if (targetTab) {
@@ -684,7 +706,6 @@ async function startAutoAnalysis(iterations, tabId) {
             if (!isInitialAvailable) {
                 await log(`🔒 Начальное видео недоступно (${targetTab.url}). Попытка перехода на доступное...`, "warn");
 
-                // Получаем все видео для выбора
                 const allVideos = await getVideos();
                 let currentVideoIdForInitialCheck = null;
                 try {
@@ -698,10 +719,7 @@ async function startAutoAnalysis(iterations, tabId) {
                     console.warn("Не удалось извлечь videoId начального видео для добавления в черный список");
                 }
 
-                // Получаем режим выбора
                 const mode = await getSelectionMode();
-
-                // Выбираем новое видео, исключая недоступное
                 const nextVideoId = await selectNextVideoId(allVideos, currentVideoIdForInitialCheck, mode);
 
                 if (nextVideoId) {
@@ -714,10 +732,8 @@ async function startAutoAnalysis(iterations, tabId) {
 
                         if (navResponse?.status === "success") {
                             await log(`✅ Переход на начальное видео ${nextVideoId} инициирован`, "success");
-                            // Ждем загрузки новой страницы
                             await waitForPageLoad(targetTabId);
                             await log(`✅ Начальная страница загружена. Продолжаем автоанализ.`, "success");
-                            // Продолжаем выполнение цикла
                         } else {
                             await log(`❌ Не удалось перейти на начальное видео ${nextVideoId}. Останавливаю автоанализ.`, "error");
                             throw new Error(`Не удалось перейти на начальное видео ${nextVideoId}`);
@@ -739,6 +755,12 @@ async function startAutoAnalysis(iterations, tabId) {
 
         // === ОСНОВНОЙ ЦИКЛ АВТОАНАЛИЗА ===
         for (let i = 1; i <= totalIterations; i++) {
+            // 👇 Проверяем, не была ли запрошена остановка
+            if (stopRequested) {
+                await log(`⏹️ Анализ остановлен пользователем на итерации ${i}/${totalIterations}`, "warn");
+                break;
+            }
+
             if (!isAnalysisRunning) {
                 await log(`⏭️ Автоанализ был остановлен на итерации ${i}.`, "warn");
                 break;
@@ -749,6 +771,12 @@ async function startAutoAnalysis(iterations, tabId) {
 
             // Передаем флаг isAutoAnalysis = true
             await handleParseOnce(targetTabId, 1, 3, true);
+
+            // 👇 Проверяем снова после handleParseOnce
+            if (stopRequested) {
+                await log(`⏹️ Анализ остановлен пользователем после итерации ${i}/${totalIterations}`, "warn");
+                break;
+            }
 
             // Ждём загрузки страницы на targetTabId (на всякий случай)
             await waitForPageLoad(targetTabId);
@@ -766,6 +794,8 @@ async function startAutoAnalysis(iterations, tabId) {
         currentIteration = 0;
         totalIterations = 0;
         targetTabId = null;
+        stopRequested = false;
+        broadcastAnalysisStatus('stopped'); // 👈 Сообщаем popup, что анализ завершился
     }
 }
 
