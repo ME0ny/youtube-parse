@@ -10,12 +10,16 @@
  *    - не было исходным
  * 5. Если не нашёл — берёт первое подходящее из таблицы
  */
-function selectNextVideoId(videos, currentVideoId = null) {
+async function selectNextVideoId(videos, currentVideoId = null, mode = 'smart') {
     if (!videos || videos.length === 0) {
         return null;
     }
 
-    // 1. Группируем видео по каналам
+    if (mode === 'batch') {
+        return selectNextVideoFromLastBatch(videos, currentVideoId);
+    }
+
+    // === УМНЫЙ АЛГОРИТМ ===
     const channelGroups = {};
     videos.forEach(video => {
         const channel = video.channelName || 'Неизвестен';
@@ -25,17 +29,13 @@ function selectNextVideoId(videos, currentVideoId = null) {
         channelGroups[channel].push(video);
     });
 
-    // 2. Сортируем каналы по возрастанию количества видео
     const sortedChannels = Object.entries(channelGroups)
         .sort(([, a], [, b]) => a.length - b.length);
 
-    // 3. Проверяем до 10 каналов с наименьшим количеством
     for (let i = 0; i < Math.min(10, sortedChannels.length); i++) {
         const [channelName, videoList] = sortedChannels[i];
 
-        // Ищем видео, которое:
-        // - не текущее
-        // - не было исходным
+        // ✅ Проверяем: не текущее И не было исходным
         for (const video of videoList) {
             if (
                 video.videoId !== currentVideoId &&
@@ -45,7 +45,7 @@ function selectNextVideoId(videos, currentVideoId = null) {
             }
         }
 
-        // Если не нашли "идеальное" — ищем просто не текущее
+        // ✅ Fallback: просто не текущее
         for (const video of videoList) {
             if (video.videoId !== currentVideoId) {
                 return video.videoId;
@@ -53,23 +53,34 @@ function selectNextVideoId(videos, currentVideoId = null) {
         }
     }
 
-    // 4. ФИНАЛЬНЫЙ FALLBACK: первое видео из всей таблицы, не равное текущему
+    // ✅ Финальный fallback: первое не текущее из всей таблицы
+    for (const video of videos) {
+        if (
+            video.videoId !== currentVideoId &&
+            video.videoId !== video.sourceVideoId
+        ) {
+            return video.videoId;
+        }
+    }
+
+    // ✅ Абсолютный fallback
     for (const video of videos) {
         if (video.videoId !== currentVideoId) {
             return video.videoId;
         }
     }
 
-    // 5. Абсолютный fallback
     return videos[0]?.videoId || null;
 }
 
+/**
+ * Выбирает следующее видео только из последней подборки
+ */
 function selectNextVideoFromLastBatch(videos, currentVideoId) {
     if (!videos || videos.length === 0 || !currentVideoId) {
         return null;
     }
 
-    // 1. Фильтруем видео, которые были найдены на текущей странице
     const lastBatch = videos.filter(video => video.sourceVideoId === currentVideoId);
 
     if (lastBatch.length === 0) {
@@ -77,9 +88,6 @@ function selectNextVideoFromLastBatch(videos, currentVideoId) {
         return null;
     }
 
-    console.log(`[Selector] Найдено ${lastBatch.length} видео из последней подборки`);
-
-    // 2. Группируем по каналам
     const channelGroups = {};
     lastBatch.forEach(video => {
         const channel = video.channelName || 'Неизвестен';
@@ -89,32 +97,25 @@ function selectNextVideoFromLastBatch(videos, currentVideoId) {
         channelGroups[channel].push(video);
     });
 
-    // 3. Сортируем каналы по возрастанию количества
     const sortedChannels = Object.entries(channelGroups)
         .sort(([, a], [, b]) => a.length - b.length);
 
-    // 4. Проверяем до 10 каналов
     for (let i = 0; i < Math.min(10, sortedChannels.length); i++) {
         const [channelName, videoList] = sortedChannels[i];
 
-        // Ищем видео, которое ≠ текущему
         for (const video of videoList) {
             if (video.videoId !== currentVideoId) {
-                console.log(`[Selector] Выбрано видео из последней подборки: ${video.videoId} (канал: ${channelName})`);
                 return video.videoId;
             }
         }
     }
 
-    // 5. Fallback: первое видео ≠ текущему
     for (const video of lastBatch) {
         if (video.videoId !== currentVideoId) {
-            console.log(`[Selector] Fallback: выбрано видео из последней подборки: ${video.videoId}`);
             return video.videoId;
         }
     }
 
-    console.log("[Selector] Все видео из последней подборки = текущему видео");
     return null;
 }
 
