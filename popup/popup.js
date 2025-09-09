@@ -358,7 +358,7 @@ class PopupController {
         if (lines.length === 0) return [];
 
         const firstLine = lines[0];
-        const delimiter = firstLine.includes('\t') ? '\t' : ',';
+        const delimiter = firstLine.includes('\t') ? '\t' : ';';
 
         // 👇 Обновлённые заголовки
         const headers = firstLine.split(delimiter).map(h => h.trim().toLowerCase());
