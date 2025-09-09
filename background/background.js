@@ -154,12 +154,16 @@ async function appendVideos(newVideos) {
 }
 // 👇 Временно: встроенная функция выбора следующего видео
 
-function selectNextVideoId(videos, currentVideoId = null) {
+async function selectNextVideoId(videos, currentVideoId = null, mode = 'smart') {
     if (!videos || videos.length === 0) {
         return null;
     }
 
-    // 1. Группируем по каналам
+    if (mode === 'batch') {
+        return selectNextVideoFromLastBatch(videos, currentVideoId);
+    }
+
+    // === УМНЫЙ АЛГОРИТМ ===
     const channelGroups = {};
     videos.forEach(video => {
         const channel = video.channelName || 'Неизвестен';
@@ -169,27 +173,21 @@ function selectNextVideoId(videos, currentVideoId = null) {
         channelGroups[channel].push(video);
     });
 
-    // 2. Сортируем каналы по количеству видео (от меньшего к большему)
     const sortedChannels = Object.entries(channelGroups)
         .sort(([, a], [, b]) => a.length - b.length);
 
-    // 3. Пробуем 10 каналов с наименьшим количеством видео
     for (let i = 0; i < Math.min(10, sortedChannels.length); i++) {
         const [channelName, videoList] = sortedChannels[i];
 
-        // Ищем первое видео, которое:
-        // - не было исходным (videoId !== sourceVideoId)
-        // - не является текущим (videoId !== currentVideoId)
         for (const video of videoList) {
             if (
-                video.videoId !== video.sourceVideoId &&
-                video.videoId !== currentVideoId
+                video.videoId !== currentVideoId &&
+                video.videoId !== video.sourceVideoId
             ) {
                 return video.videoId;
             }
         }
 
-        // Если не нашли "идеальное" — ищем просто не текущее
         for (const video of videoList) {
             if (video.videoId !== currentVideoId) {
                 return video.videoId;
@@ -197,16 +195,59 @@ function selectNextVideoId(videos, currentVideoId = null) {
         }
     }
 
-    // 4. ФИНАЛЬНЫЙ FALLBACK: берём первое видео из всей таблицы, не равное текущему
     for (const video of videos) {
         if (video.videoId !== currentVideoId) {
             return video.videoId;
         }
     }
 
-    // 5. АБСОЛЮТНЫЙ FALLBACK: если ВСЁ равно currentVideoId — возвращаем первый ID
-    // (теоретически невозможно при videos.length > 1, но на всякий случай)
     return videos[0]?.videoId || null;
+}
+
+/**
+ * Выбирает следующее видео только из последней подборки
+ */
+function selectNextVideoFromLastBatch(videos, currentVideoId) {
+    if (!videos || videos.length === 0 || !currentVideoId) {
+        return null;
+    }
+
+    const lastBatch = videos.filter(video => video.sourceVideoId === currentVideoId);
+
+    if (lastBatch.length === 0) {
+        console.log("[Selector] Нет видео из последней подборки");
+        return null;
+    }
+
+    const channelGroups = {};
+    lastBatch.forEach(video => {
+        const channel = video.channelName || 'Неизвестен';
+        if (!channelGroups[channel]) {
+            channelGroups[channel] = [];
+        }
+        channelGroups[channel].push(video);
+    });
+
+    const sortedChannels = Object.entries(channelGroups)
+        .sort(([, a], [, b]) => a.length - b.length);
+
+    for (let i = 0; i < Math.min(10, sortedChannels.length); i++) {
+        const [channelName, videoList] = sortedChannels[i];
+
+        for (const video of videoList) {
+            if (video.videoId !== currentVideoId) {
+                return video.videoId;
+            }
+        }
+    }
+
+    for (const video of lastBatch) {
+        if (video.videoId !== currentVideoId) {
+            return video.videoId;
+        }
+    }
+
+    return null;
 }
 
 // 👇 Обновим handleParseOnce — добавим сохранение данных
@@ -245,11 +286,10 @@ async function handleParseOnce(tabId, attempt = 1, maxAttempts = 3) {
             const currentVideoId = response.currentVideoId || null;
 
             // 👇 ВЫЗЫВАЕМ АЛГОРИТМ С УЧЁТОМ ТЕКУЩЕГО ВИДЕО
-            const nextVideoId = selectNextVideoId(combined, currentVideoId);
-
+            const mode = await getSelectionMode();
+            const nextVideoId = await selectNextVideoId(combined, currentVideoId, mode);
             if (nextVideoId) {
-                await log(`➡️ Следующее видео для парсинга: ${nextVideoId}`, "info");
-
+                await log(`➡️ Следующее видео (${mode === 'batch' ? 'подборка' : 'умный'}): ${nextVideoId}`, "info");
                 // 👇 НОВОЕ: отправляем команду на переход
                 try {
                     const navResponse = await sendMessageToTab(tabId, {
@@ -407,4 +447,12 @@ async function startAutoAnalysis(iterations, tabId) {
 // 👇 Вспомогательная функция задержки
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getSelectionMode() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['selectionMode'], (result) => {
+            resolve(result.selectionMode || 'smart');
+        });
+    });
 }

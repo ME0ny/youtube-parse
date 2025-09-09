@@ -28,8 +28,15 @@
             </div>
         </section>
 
-        <!-- popup.html — замени блок импорта на этот -->
-
+        <div class="input-group">
+            <label>
+                <input type="radio" name="selectionMode" value="smart" checked> Умный выбор (по всем данным)
+            </label>
+            <br>
+            <label>
+                <input type="radio" name="selectionMode" value="batch"> Из последней подборки
+            </label>
+        </div>
         <h4 style="display: flex; align-items: center; gap: 8px;">
             📥 Импорт данных (CSV/TSV)
             <button id="toggleImportBtn" style="font-size: 12px; padding: 2px 8px; margin: 0;">🔽</button>

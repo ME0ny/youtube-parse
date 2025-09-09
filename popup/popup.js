@@ -8,6 +8,7 @@ class PopupController {
         this.loadLogs(); // Теперь AppLogger уже доступен благодаря <script>
         this.loadTableData();
         this.restoreImportSectionState();
+        this.restoreSelectionMode();
     }
 
     initElements() {
@@ -23,6 +24,7 @@ class PopupController {
         this.importSection = document.getElementById('importSection');
         this.counterInput = document.getElementById('counterInput');
         this.startAnalysisBtn = document.getElementById('startAnalysisBtn');
+        this.selectionModeRadios = document.querySelectorAll('input[name="selectionMode"]');
     }
 
     bindEvents() {
@@ -33,6 +35,9 @@ class PopupController {
         this.importDataBtn.addEventListener('click', () => this.handleImportData());
         this.toggleImportBtn.addEventListener('click', () => this.toggleImportSection());
         this.startAnalysisBtn.addEventListener('click', () => this.handleStartAnalysis());
+        this.selectionModeRadios.forEach(radio => {
+            radio.addEventListener('change', () => this.saveSelectionMode());
+        });
         // Слушаем новые логи
         chrome.runtime.onMessage.addListener((request) => {
             if (request.type === 'newLog' && request.log) {
@@ -463,6 +468,23 @@ class PopupController {
             level: "success",
             timestamp: Date.now()
         });
+    }
+
+    saveSelectionMode() {
+        const selected = document.querySelector('input[name="selectionMode"]:checked');
+        if (selected) {
+            // Сохраняем в chrome.storage.local для доступа из background
+            chrome.storage.local.set({ selectionMode: selected.value });
+        }
+    }
+
+    // Восстанавливаем режим при открытии popup
+    restoreSelectionMode() {
+        const saved = localStorage.getItem('selectionMode');
+        if (saved) {
+            const radio = document.querySelector(`input[name="selectionMode"][value="${saved}"]`);
+            if (radio) radio.checked = true;
+        }
     }
 }
 
