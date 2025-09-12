@@ -25,13 +25,14 @@
                 <div class="setting-item">
                     <label class="setting-label">Алгоритм выбора следующего видео:</label>
                     <div class="radio-group">
+                        <!-- Изменяем текст и value -->
                         <label class="radio-label">
-                            <input type="radio" name="selectionMode" value="smart" checked>
-                            Умный (по всем данным)
+                            <input type="radio" name="selectionMode" value="all_videos" checked>
+                            Анализ всех видео
                         </label>
                         <label class="radio-label">
-                            <input type="radio" name="selectionMode" value="batch">
-                            Из последней подборки
+                            <input type="radio" name="selectionMode" value="current_recommendations">
+                            Анализ видео из последней подборки
                         </label>
                     </div>
                 </div>

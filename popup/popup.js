@@ -223,22 +223,23 @@ class PopupApp {
         // В реальном сценарии здесь будет sendMessage для очистки в background
     }
 
-    handleStart() {
+    async handleStart() {
+        // Получаем параметры из UI
         const iterations = parseInt(this.iterationsInput.value) || 10;
         const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart';
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: `🚀 Запуск анализа: ${iterations} итераций, режим: ${mode}`, level: 'info' } }));
 
-        // В реальном сценарии здесь будет sendMessage для запуска в background
-        // и обновление UI (например, disable кнопок) через события или напрямую
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Запуск анализа: ${iterations} итераций, режим: ${mode}`, level: 'info' } }));
 
-        this.startBtn.disabled = true;
-        this.stopBtn.disabled = false;
-        setTimeout(() => {
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: '🎉 Анализ завершён (имитация)', level: 'success' } }));
-            this.startBtn.disabled = false;
-            this.stopBtn.disabled = true;
-            this.table.loadInitialData(); // Имитация обновления таблицы
-        }, 3000);
+        // Отправляем сообщение в background с параметрами
+        try {
+            await chrome.runtime.sendMessage({
+                action: "startAnalysis",
+                params: { iterations, mode } // Передаем параметры
+            });
+            // UI обновится через сообщения от background
+        } catch (err) {
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка запуска анализа: ${err.message}`, level: 'error' } }));
+        }
     }
 
     handleStop() {
@@ -294,12 +295,16 @@ class PopupApp {
 
     // НОВОЕ: Обработчик для запуска тестового сценария
     async handleRunTestScenario() {
-        // Используем CustomEvent для логирования внутри popup
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: "📤 Отправка команды на запуск тестового сценария...", level: "info" } }));
+        // Получаем параметры из UI
+        const iterations = parseInt(this.iterationsInput.value) || 10;
+        const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart';
+
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Запуск тестового сценария: ${iterations} шагов, режим: ${mode}`, level: 'info' } }));
         try {
-            // Отправляем сообщение в background
+            // Отправляем сообщение в background с параметрами
             await chrome.runtime.sendMessage({
-                action: "runTestScenario"
+                action: "runTestScenario",
+                params: { iterations, mode } // Передаем параметры
             });
             document.dispatchEvent(new CustomEvent('log', { detail: { message: "✅ Команда на запуск тестового сценария отправлена.", level: "success" } }));
         } catch (err) {

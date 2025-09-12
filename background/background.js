@@ -30,6 +30,33 @@ scenarioEngine.registerScenario(testCountdownScenario);
 // --- Обработка сообщений от popup ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
+    if (request.action === "startAnalysis") {
+        const params = request.params || {}; // Получаем параметры
+        logger.info("📥 Получена команда на запуск анализа", { module: 'Background', meta: params });
+
+        // Запускаем сценарий асинхронно
+        (async () => {
+            try {
+                let activeTabId = null;
+                try {
+                    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                    activeTabId = activeTab?.id || null;
+                } catch (e) {
+                    logger.warn("Не удалось получить активную вкладку для сценария", { module: 'Background' });
+                }
+
+                // Передаем параметры в сценарий через context.params
+                const instanceId = await scenarioEngine.run(testCountdownScenario, params, activeTabId);
+                logger.info(`🏁 Анализ запущен с ID: ${instanceId}`, { module: 'Background' });
+
+            } catch (err) {
+                logger.error(`❌ Ошибка запуска анализа: ${err.message}`, { module: 'Background' });
+            }
+        })();
+
+        return true; // Для асинхронной отправки ответа
+    }
+
     if (request.action === "getTableData") {
         (async () => {
             try {
@@ -83,12 +110,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     // 👇 НОВОЕ: обработка команды на запуск тестового сценария
     if (request.action === "runTestScenario") {
-        logger.info("📥 Получена команда на запуск тестового сценария", { module: 'Background' });
+        // Получаем параметры из запроса
+        const params = request.params || {};
+        logger.info("📥 Получена команда на запуск тестового сценария", { module: 'Background', meta: params });
 
-        // Запускаем сценарий асинхронно, не дожидаясь завершения
+        // Запускаем сценарий асинхронно
         (async () => {
             try {
-                // Получаем активную вкладку для контекста (опционально)
                 let activeTabId = null;
                 try {
                     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -97,7 +125,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     logger.warn("Не удалось получить активную вкладку для сценария", { module: 'Background' });
                 }
 
-                const instanceId = await scenarioEngine.run(testCountdownScenario, {}, activeTabId);
+                // Передаем параметры в сценарий через context.params
+                const instanceId = await scenarioEngine.run(testCountdownScenario, params, activeTabId);
                 logger.info(`🏁 Тестовый сценарий запущен с ID: ${instanceId}`, { module: 'Background' });
 
             } catch (err) {
@@ -105,8 +134,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         })();
 
-        // Важно для асинхронных операций
-        return true;
+        return true; // Для асинхронной отправки ответа
     }
 
     // TODO: Здесь будут обработчики для других действий (parseOnce, startAutoAnalysis и т.д.)
