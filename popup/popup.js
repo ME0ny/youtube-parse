@@ -52,8 +52,6 @@ class PopupApp {
 
     bindEvents() {
         // --- Обработчики UI popup-а ---
-        this.toggleSettingsBtn.addEventListener('click', () => this.toggleSettings());
-
         this.selectionModeRadios.forEach(radio => {
             radio.addEventListener('change', () => this.saveSettings());
         });
@@ -78,41 +76,78 @@ class PopupApp {
 
     // --- State Management ---
     saveSettings() {
+        console.log("saveSettings: Начало выполнения");
+
+        // Определяем состояние для сохранения
+        const isSettingsCollapsed = this.settingsSection.classList.contains('collapsed');
+        console.log("saveSettings: Определяем isSettingsCollapsed:", isSettingsCollapsed);
+
         const state = {
-            isSettingsCollapsed: this.settingsSection.classList.contains('collapsed'),
+            isSettingsCollapsed: isSettingsCollapsed,
             selectionMode: document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart',
             iterations: this.iterationsInput.value,
         };
-        localStorage.setItem('popupSettings', JSON.stringify(state));
-    }
 
-    loadState() {
-        const saved = localStorage.getItem('popupSettings');
-        if (saved) {
-            const state = JSON.parse(saved);
+        console.log("saveSettings: Подготовленный объект state для сохранения:", state);
 
-            if (state.isSettingsCollapsed) {
-                this.settingsSection.classList.add('collapsed');
-                this.toggleSettingsBtn.textContent = '🔽';
-            }
-
-            if (state.selectionMode) {
-                const radio = document.querySelector(`input[name="selectionMode"][value="${state.selectionMode}"]`);
-                if (radio) radio.checked = true;
-            }
-
-            if (state.iterations) {
-                this.iterationsInput.value = state.iterations;
-            }
+        try {
+            localStorage.setItem('popupSettings', JSON.stringify(state));
+            console.log("saveSettings: Состояние успешно сохранено в localStorage");
+        } catch (e) {
+            console.error("saveSettings: Ошибка при сохранении в localStorage:", e);
         }
     }
 
-    // --- UI Actions ---
-    toggleSettings() {
-        this.settingsSection.classList.toggle('collapsed');
-        const isCollapsed = this.settingsSection.classList.contains('collapsed');
-        this.toggleSettingsBtn.textContent = isCollapsed ? '🔽' : '▲';
-        this.saveSettings();
+    loadState() {
+        console.log("loadState: Начало выполнения");
+
+        const savedStateJson = localStorage.getItem('popupSettings');
+        console.log("loadState: Полученные данные из localStorage:", savedStateJson);
+
+        if (savedStateJson) {
+            try {
+                const state = JSON.parse(savedStateJson);
+                console.log("loadState: Распарсенный объект state:", state);
+
+                // Применяем состояние сворачивания
+                if (state.isSettingsCollapsed === true) {
+                    console.log("loadState: Применяем состояние 'collapsed'");
+                    this.settingsSection.classList.add('collapsed');
+                    this.toggleSettingsBtn.textContent = '🔽';
+                } else {
+                    // Если false или undefined, секция развернута
+                    console.log("loadState: Применяем состояние 'развёрнута' (удаляем 'collapsed')");
+                    this.settingsSection.classList.remove('collapsed');
+                    this.toggleSettingsBtn.textContent = '▲';
+                }
+
+                // Применяем другие настройки (если есть)
+                if (state.selectionMode) {
+                    const radio = document.querySelector(`input[name="selectionMode"][value="${state.selectionMode}"]`);
+                    if (radio) {
+                        radio.checked = true;
+                        console.log("loadState: Установлен режим выбора:", state.selectionMode);
+                    }
+                }
+
+                if (state.iterations) {
+                    this.iterationsInput.value = state.iterations;
+                    console.log("loadState: Установлено количество итераций:", state.iterations);
+                }
+
+                console.log("loadState: Завершено успешно");
+            } catch (e) {
+                console.error("loadState: Ошибка при парсинге сохранённого состояния:", e);
+                // В случае ошибки парсинга, используем значения по умолчанию
+                // и пересохраняем их
+            }
+        } else {
+            console.log("loadState: Нет сохранённых данных, используются значения по умолчанию");
+            // Убедимся, что значения по умолчанию установлены корректно
+            this.settingsSection.classList.remove('collapsed'); // По умолчанию развернуто
+            this.toggleSettingsBtn.textContent = '▲';
+            // Другие значения по умолчанию уже заданы в HTML
+        }
     }
 
     // --- Message Listener ---
