@@ -8,7 +8,6 @@ export class LogSection {
     init() {
         // Слушаем внутренние события для добавления логов
         document.addEventListener('log', (e) => {
-            console.log("LogSection: Received CustomEvent 'log'"); // <-- Лог для отладки
             this.addLog(e.detail);
         });
         document.addEventListener('clearLog', () => this.clear());
@@ -20,13 +19,11 @@ export class LogSection {
      * Загружает и отображает начальные логи из хранилища.
      */
     async loadInitialLogs() {
-        console.log("LogSection: Загрузка начальных логов..."); // <-- Лог для отладки
         try {
             // Получаем логи напрямую из chrome.storage.local
             // В будущем это можно будет заменить на вызов нового Logger API
             const result = await chrome.storage.local.get(['appLogs']);
             const logs = result.appLogs || [];
-            console.log(`LogSection: Получено ${logs.length} логов из хранилища.`); // <-- Лог для отладки
 
             // Очищаем контейнер и убираем placeholder
             this.container.innerHTML = '';

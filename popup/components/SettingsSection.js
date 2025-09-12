@@ -78,6 +78,7 @@ export class SettingsSection {
 
     handleImport() {
         const text = this.importTextarea.value.trim();
+
         if (!text) {
             this.dispatchEvent('log', { message: '❌ Нет данных для импорта', level: 'error' });
             return;
@@ -85,26 +86,71 @@ export class SettingsSection {
 
         try {
             const data = this.parseCSV(text);
-            this.dispatchEvent('importData', { data });
+
+            if (data.length === 0) {
+                this.dispatchEvent('log', { message: '❌ Нет данных для импорта после парсинга', level: 'error' });
+                return;
+            }
+
+            const dataWithFlag = data.map((item, index) => {
+                const newItem = {
+                    ...item,
+                    isImported: true, // Добавляем флаг
+                    timestamp: item.timestamp || Date.now() // Убеждаемся, что timestamp есть
+                };
+                return newItem;
+            });
+
+            this.dispatchEvent('importData', { data: dataWithFlag }); // ВАЖНО: ключ 'data'
             this.importTextarea.value = '';
-            this.dispatchEvent('log', { message: `✅ Импортировано ${data.length} записей`, level: 'success' });
+            this.dispatchEvent('log', { message: `✅ Импортировано ${dataWithFlag.length} записей`, level: 'success' });
         } catch (err) {
+            console.error("[SettingsSection] Ошибка импорта:", err);
             this.dispatchEvent('log', { message: `❌ Ошибка импорта: ${err.message}`, level: 'error' });
         }
     }
 
-    handleClearImported() {
-        this.dispatchEvent('clearImported');
-        this.dispatchEvent('log', { message: '✅ Импортированные данные очищены', level: 'success' });
+    async handleClearImported() {
+        console.log("[SettingsSection] Начало handleClearImported");
+        this.dispatchEvent('log', { message: '📤 Отправка команды на очистку импортированных данных...', level: 'info' });
+
+        try {
+            // Отправляем сообщение в background
+            const response = await chrome.runtime.sendMessage({
+                action: "clearImportedTableData"
+            });
+
+            if (response && response.status === "success") {
+                console.log("[SettingsSection] Импортированные данные успешно очищены в background");
+                this.dispatchEvent('log', { message: '✅ Импортированные данные очищены', level: 'success' });
+                // Опционально: можно отправить событие, если другим компонентам нужно знать
+                // this.dispatchEvent('importedDataCleared');
+            } else {
+                const errorMsg = response?.message || 'Неизвестная ошибка';
+                console.error("[SettingsSection] Ошибка очистки в background:", errorMsg);
+                this.dispatchEvent('log', { message: `❌ Ошибка очистки: ${errorMsg}`, level: 'error' });
+            }
+        } catch (err) {
+            console.error("[SettingsSection] Ошибка отправки команды в background:", err);
+            this.dispatchEvent('log', { message: `❌ Ошибка связи: ${err.message}`, level: 'error' });
+        }
     }
 
     parseCSV(text) {
         const lines = text.split(/\r?\n/);
-        if (lines.length === 0) throw new Error('Пустой файл');
+        if (lines.length === 0) {
+            throw new Error('Пустой файл');
+        }
 
-        const headers = lines[0].split(/\t|,/).map(h => h.trim().toLowerCase());
+        // Определяем разделитель: сначала пробуем ';', затем ','
+        let delimiter = ';';
+        if (lines[0].includes(',') && !lines[0].includes(';')) {
+            delimiter = ',';
+        }
+
+        const headers = lines[0].split(delimiter).map(h => h.trim().toLowerCase());
+
         const required = ['название', 'id', 'просмотры', 'канал', 'исходное видео', 'миниатюра'];
-
         const fieldMap = {
             'название': 'title',
             'id': 'videoId',
@@ -117,18 +163,37 @@ export class SettingsSection {
         const indices = {};
         required.forEach(field => {
             const index = headers.findIndex(h => h === field);
-            if (index === -1) throw new Error(`Не найдена колонка: ${field}`);
+            if (index === -1) {
+                console.error("[SettingsSection] Не найдена колонка:", field);
+                throw new Error(`Не найдена колонка: ${field}`);
+            }
             indices[field] = index;
         });
 
         const data = [];
         for (let i = 1; i < lines.length; i++) {
-            if (!lines[i].trim()) continue;
-            const cells = lines[i].split(/\t|,/);
+            const line = lines[i].trim();
+            if (!line) {
+                continue;
+            }
+            const cells = line.split(delimiter).map(cell => {
+                // Убираем окружающие кавычки, если они есть
+                let trimmed = cell.trim();
+                if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+                    trimmed = trimmed.substring(1, trimmed.length - 1);
+                }
+                return trimmed;
+            });
+
+            if (cells.length < headers.length) {
+                console.warn(`[SettingsSection] Недостаточно ячеек в строке ${i}, пропускаем`);
+                continue; // Пропускаем строки с недостаточным количеством ячеек
+            }
+
             const item = {};
             required.forEach(field => {
                 const index = indices[field];
-                item[fieldMap[field]] = cells[index] ? cells[index].trim() : '';
+                item[fieldMap[field]] = cells[index] ? cells[index] : '';
             });
             data.push(item);
         }

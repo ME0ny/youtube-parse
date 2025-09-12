@@ -1,3 +1,65 @@
+// Скрипт для проверки индексов через sendMessage
+(async () => {
+  try {
+    console.log("🔍 Отправка запроса DEBUG_getImportedDataIndices в background...");
+    const response = await chrome.runtime.sendMessage({ action: "DEBUG_getImportedDataIndices" });
+    console.log("📥 Ответ от background:", response);
+
+    if (response && response.status === "success") {
+        const data = response.data; // Это serializableData из обработчика
+        console.log("✅ Данные индексов получены.");
+
+        // --- Выводим структуры в запрошенном формате ---
+        console.log("\n--- Сет видео, на которые мы уже заходили (первые 10) ---");
+        if (data.visitedVideoIds_sample && data.visitedVideoIds_sample.length > 0) {
+            console.log(data.visitedVideoIds_sample.slice(0, 10));
+            console.log(`... и ещё ${Math.max(0, data.visitedVideoIds_size - 10)} видео.`);
+        } else if (data.visitedVideoIds_size === 0) {
+            console.log("(Пусто)");
+        }
+
+        console.log("\n--- Словарь: канал -> количество видео (первые 10) ---");
+        if (data.channelVideoCounts_sample) {
+            const entries = Object.entries(data.channelVideoCounts_sample);
+            entries.slice(0, 10).forEach(([channel, count]) => {
+                console.log(`${channel}: ${count}`);
+            });
+            const remaining = data.channelVideoCounts_size - 10;
+            if (remaining > 0) console.log(`... и ещё ${remaining} каналов.`);
+        } else if (data.channelVideoCounts_size === 0) {
+            console.log("(Пусто)");
+        }
+
+        console.log("\n--- Словарь: канал -> список видео ID (первые 5 каналов, первые 3 ID) ---");
+        if (data.channelToVideoIds_sample) {
+            const entries = Object.entries(data.channelToVideoIds_sample);
+            entries.slice(0, 5).forEach(([channel, videoIdsArray]) => {
+                const displayIds = videoIdsArray.slice(0, 3);
+                console.log(`${channel}: [${displayIds.join(', ')}${videoIdsArray.length > 3 ? `... и ещё ${videoIdsArray.length - 3}` : ''}]`);
+            });
+            const remaining = data.channelToVideoIds_size - 5;
+            if (remaining > 0) console.log(`... и ещё ${remaining} каналов.`);
+        } else if (data.channelToVideoIds_size === 0) {
+            console.log("(Пусто)");
+        }
+        // --- Конец вывода структур ---
+
+        if (data.visitedVideoIds_size > 0 && data.channelVideoCounts_size > 0 && data.channelToVideoIds_size > 0) {
+            console.log("\n🎉 Все структуры данных успешно созданы и НЕ пусты!");
+        } else {
+            console.log("\n⚠️ Структуры созданы, но некоторые пусты. Проверьте импортированные данные.");
+        }
+
+    } else if (response) {
+        console.error("❌ Ошибка от background:", response.message);
+    } else {
+         console.error("❌ Пустой или неопределенный ответ от background.");
+    }
+  } catch (err) {
+    console.error("❌ Ошибка отправки сообщения:", err);
+  }
+})();
+
 
 === START FILE: D:\разработка\youtube-parser-os\manifest.json ===
 

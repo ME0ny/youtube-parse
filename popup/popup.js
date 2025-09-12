@@ -35,6 +35,9 @@ class PopupApp {
         if (!this.runTestScenarioBtn) {
             console.error("Кнопка 'runTestScenarioBtn' не найдена в DOM");
         }
+        document.addEventListener('importData', (e) => {
+            this.handleImportData(e.detail); // Передаём detail как аргумент
+        });
     }
 
     initComponents() {
@@ -76,11 +79,9 @@ class PopupApp {
 
     // --- State Management ---
     saveSettings() {
-        console.log("saveSettings: Начало выполнения");
 
         // Определяем состояние для сохранения
         const isSettingsCollapsed = this.settingsSection.classList.contains('collapsed');
-        console.log("saveSettings: Определяем isSettingsCollapsed:", isSettingsCollapsed);
 
         const state = {
             isSettingsCollapsed: isSettingsCollapsed,
@@ -88,35 +89,24 @@ class PopupApp {
             iterations: this.iterationsInput.value,
         };
 
-        console.log("saveSettings: Подготовленный объект state для сохранения:", state);
 
         try {
             localStorage.setItem('popupSettings', JSON.stringify(state));
-            console.log("saveSettings: Состояние успешно сохранено в localStorage");
         } catch (e) {
             console.error("saveSettings: Ошибка при сохранении в localStorage:", e);
         }
     }
 
     loadState() {
-        console.log("loadState: Начало выполнения");
 
         const savedStateJson = localStorage.getItem('popupSettings');
-        console.log("loadState: Полученные данные из localStorage:", savedStateJson);
-
         if (savedStateJson) {
             try {
                 const state = JSON.parse(savedStateJson);
-                console.log("loadState: Распарсенный объект state:", state);
-
-                // Применяем состояние сворачивания
                 if (state.isSettingsCollapsed === true) {
-                    console.log("loadState: Применяем состояние 'collapsed'");
                     this.settingsSection.classList.add('collapsed');
                     this.toggleSettingsBtn.textContent = '🔽';
                 } else {
-                    // Если false или undefined, секция развернута
-                    console.log("loadState: Применяем состояние 'развёрнута' (удаляем 'collapsed')");
                     this.settingsSection.classList.remove('collapsed');
                     this.toggleSettingsBtn.textContent = '▲';
                 }
@@ -126,24 +116,18 @@ class PopupApp {
                     const radio = document.querySelector(`input[name="selectionMode"][value="${state.selectionMode}"]`);
                     if (radio) {
                         radio.checked = true;
-                        console.log("loadState: Установлен режим выбора:", state.selectionMode);
                     }
                 }
 
                 if (state.iterations) {
                     this.iterationsInput.value = state.iterations;
-                    console.log("loadState: Установлено количество итераций:", state.iterations);
                 }
-
-                console.log("loadState: Завершено успешно");
             } catch (e) {
                 console.error("loadState: Ошибка при парсинге сохранённого состояния:", e);
                 // В случае ошибки парсинга, используем значения по умолчанию
                 // и пересохраняем их
             }
         } else {
-            console.log("loadState: Нет сохранённых данных, используются значения по умолчанию");
-            // Убедимся, что значения по умолчанию установлены корректно
             this.settingsSection.classList.remove('collapsed'); // По умолчанию развернуто
             this.toggleSettingsBtn.textContent = '▲';
             // Другие значения по умолчанию уже заданы в HTML
@@ -153,38 +137,23 @@ class PopupApp {
     // --- Message Listener ---
     addMessageListener() {
         this.messageListener = (request, sender, sendResponse) => {
-            // console.log("Popup received message:", request); // <-- Лог для отладки
-
-            // Обработка сообщений, требующих действий на уровне popup-контроллера
-            // или передачи данных между компонентами
             if (request.type === 'dataUpdated') {
-                console.log("PopupApp: Received dataUpdated, reloading table data");
-                // Запрашиваем обновленные данные у TableSection
-                // или отправляем сообщение TableSection для перезагрузки
                 this.table.loadInitialData();
             }
 
             if (request.type === 'dataCleared') {
-                console.log("PopupApp: Received dataCleared");
                 document.dispatchEvent(new CustomEvent('clearTable'));
             }
 
             if (request.type === 'newLog' && request.log) {
-                console.log("PopupApp: Received newLog, dispatching CustomEvent"); // <-- Лог для отладки
-                // Вместо вызова this.addLog (которой больше нет)
-                // Отправляем внутреннее событие, которое будет слушать LogSection
                 document.dispatchEvent(new CustomEvent('log', { detail: request.log }));
             }
 
             if (request.type === 'logsCleared') {
-                console.log("Handling logsCleared message in PopupApp"); // <-- Лог для отладки
-                // Сообщаем компоненту журнала об очистке
                 document.dispatchEvent(new CustomEvent('clearLog'));
             }
 
             if (request.type === 'dataCleared') {
-                console.log("Handling dataCleared message in PopupApp"); // <-- Лог для отладки
-                // Сообщаем компоненту таблицы об очистке
                 document.dispatchEvent(new CustomEvent('clearTable'));
             }
 
@@ -196,7 +165,6 @@ class PopupApp {
         };
 
         chrome.runtime.onMessage.addListener(this.messageListener);
-        console.log("PopupApp: Message listener added"); // <-- Лог для отладки
     }
 
     // --- Button Handlers (имитация / заглушки) ---
@@ -293,7 +261,6 @@ class PopupApp {
         }
     }
 
-    // НОВОЕ: Обработчик для запуска тестового сценария
     async handleRunTestScenario() {
         // Получаем параметры из UI
         const iterations = parseInt(this.iterationsInput.value) || 10;
@@ -309,6 +276,39 @@ class PopupApp {
             document.dispatchEvent(new CustomEvent('log', { detail: { message: "✅ Команда на запуск тестового сценария отправлена.", level: "success" } }));
         } catch (err) {
             document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка отправки команды: ${err.message}`, level: "error" } }));
+        }
+    }
+
+    async handleImportData(eventDetail) {
+        const dataToImport = eventDetail && eventDetail.data;
+
+        if (!dataToImport || !Array.isArray(dataToImport)) {
+            console.error("[PopupApp] handleImportData: данные отсутствуют или не являются массивом", dataToImport);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Ошибка: Некорректные данные для импорта', level: 'error' } }));
+            return;
+        }
+
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Отправка ${dataToImport.length} записей для импорта...`, level: 'info' } }));
+
+        try {
+            // Отправляем данные в background для сохранения
+            const response = await chrome.runtime.sendMessage({
+                action: "importTableData", // Новое сообщение для обработки импорта
+                data: dataToImport // Отправляем массив напрямую
+            });
+
+            if (response && response.status === "success") {
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ ${response.count} записей успешно импортированы`, level: 'success' } }));
+                // Принудительно обновляем таблицу в popup
+                this.table.loadInitialData();
+            } else {
+                const errorMsg = response?.message || 'Неизвестная ошибка';
+                console.error("[PopupApp] Ошибка импорта в background:", errorMsg);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка импорта: ${errorMsg}`, level: 'error' } }));
+            }
+        } catch (err) {
+            console.error("[PopupApp] Ошибка отправки данных в background:", err);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи с background: ${err.message}`, level: 'error' } }));
         }
     }
 }

@@ -118,6 +118,56 @@ export class ChromeStorageTableAdapter {
     }
 
     /**
+     * Получает все записи, которые НЕ являются импортированными.
+     * Используется для отображения в UI.
+     * @returns {Promise<import('../core/types/table.types.js').VideoData[]>}
+     */
+    async getFreshData() {
+        try {
+            const allData = await this.getAll();
+            // Фильтруем, оставляя только "свежие" записи
+            return allData.filter(item => !item.isImported);
+        } catch (e) {
+            console.error("[ChromeStorageTableAdapter] Ошибка получения свежих данных:", e);
+            return [];
+        }
+    }
+
+    /**
+     * Очищает только записи, помеченные как импортированные (isImported: true).
+     * @returns {Promise<void>}
+     */
+    async clearImported() {
+        try {
+            console.log("[ChromeStorageTableAdapter] Начало очистки импортированных данных...");
+            // 1. Получаем все данные
+            const allData = await this.getAll();
+            console.log(`[ChromeStorageTableAdapter] Всего записей до очистки: ${allData.length}`);
+
+            // 2. Фильтруем, оставляя только НЕ импортированные данные
+            const freshData = allData.filter(item => !item.isImported);
+            console.log(`[ChromeStorageTableAdapter] Останется записей после очистки: ${freshData.length}`);
+
+            // 3. Сохраняем обратно только "свежие" данные
+            // Используем максимальный размер для сохранения
+            if (freshData.length > this.#maxSize) {
+                freshData.splice(0, freshData.length - this.#maxSize);
+            }
+
+            await chrome.storage.local.set({ [this.#storageKey]: freshData });
+            console.log("[ChromeStorageTableAdapter] Импортированные данные успешно удалены из хранилища.");
+
+            // 4. Отправляем сообщение об обновлении данных, так как состав изменился
+            // Это заставит popup перезагрузить "свежие" данные
+            this.#broadcastDataUpdate();
+
+        } catch (e) {
+            console.error("[ChromeStorageTableAdapter] Ошибка очистки импортированных данных:", e);
+            throw e;
+        }
+    }
+
+    /**
      * Отправляет сообщение о том, что данные обновились.
      * @private
      */

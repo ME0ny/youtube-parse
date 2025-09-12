@@ -1,4 +1,5 @@
 // popup/components/TableSection.js
+
 export class TableSection {
     constructor() {
         this.tableBody = document.getElementById('tableBody');
@@ -15,14 +16,15 @@ export class TableSection {
 
     /**
      * Загружает и отображает начальные данные из хранилища.
+     * Запрашивает только "свежие" (не импортированные) данные.
      */
     async loadInitialData() {
-        console.log("TableSection: Загрузка начальных данных...");
+        console.log("TableSection: Загрузка начальных данных (только свежие)...");
         try {
-            // Отправляем сообщение в background для получения данных
-            const response = await chrome.runtime.sendMessage({ action: "getTableData" });
+            // Отправляем сообщение в background для получения ТОЛЬКО свежих данных
+            const response = await chrome.runtime.sendMessage({ action: "getTableFreshData" });
             const data = response?.data || [];
-            console.log(`TableSection: Получено ${data.length} записей.`);
+            console.log(`TableSection: Получено ${data.length} свежих записей.`);
             this.render(data);
         } catch (error) {
             console.error("TableSection: Ошибка при загрузке начальных данных:", error);
