@@ -6,6 +6,7 @@ import { ChromeStorageTableAdapter } from '../adapters/ChromeStorageTableAdapter
 import { ScenarioEngine } from '../core/scenario-engine.js';
 import { testCountdownScenario } from '../scenarios/test-countdown.js';
 import { prepareImportedDataIndices } from '../core/data-processor.js';
+import { parseRecommendationScenario } from '../scenarios/parse-recommendation.js';
 
 // --- Инициализация нового функционала ---
 // 1. Создаем экземпляр логгера
@@ -43,10 +44,137 @@ export const scenarioEngine = new ScenarioEngine();
 
 // 3. Регистрируем тестовый сценарий
 scenarioEngine.registerScenario(testCountdownScenario);
+scenarioEngine.registerScenario(parseRecommendationScenario);
 // --- Конец инициализации нового функционала ---
 
 // --- Обработка сообщений от popup ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+
+    if (request.type === "contentLog") {
+        console.log("[Background] Получен лог от content script:", request);
+        // Перенаправляем лог в наш logger
+        logger.log(
+            request.message,
+            request.level || 'info',
+            {
+                module: request.module || 'ContentScript',
+                // Можно добавить ID вкладки, если нужно
+                // tabId: sender.tab?.id
+            }
+        );
+        // Намеренно не отправляем sendResponse, так как это одностороннее сообщение
+        return false; // Не нужно ждать асинхронного ответа
+    }
+
+    if (request.action === "stopAllScenarios") {
+        logger.info("📥 Получена команда на остановку всех сценариев", { module: 'Background' });
+        (async () => {
+            try {
+                // Получаем список всех запущенных сценариев
+                const runningScenarios = scenarioEngine.getRunningScenarios();
+                if (runningScenarios.length === 0) {
+                    logger.info("📭 Нет запущенных сценариев для остановки", { module: 'Background' });
+                    sendResponse({ status: "success", message: "Нет запущенных сценариев" });
+                    return;
+                }
+
+                logger.info(`⏹️ Запрошена остановка ${runningScenarios.length} сценариев`, { module: 'Background' });
+
+                let stoppedCount = 0;
+                let errorCount = 0;
+
+                const stopPromises = runningScenarios.map(async (scenario) => {
+                    try {
+                        // ScenarioEngine.stop возвращает true, если сценарий был найден и остановлен
+                        const wasStopped = scenarioEngine.stop(scenario.id);
+                        if (wasStopped) {
+                            stoppedCount++;
+                            logger.info(`⏹️ Сценарий "${scenario.name}" (ID: ${scenario.id}) остановлен`, { module: 'Background' });
+                        } else {
+                            // Это маловероятно, так как мы только что получили список запущенных
+                            logger.warn(`⚠️ Сценарий "${scenario.name}" (ID: ${scenario.id}) не был остановлен (уже завершен?)`, { module: 'Background' });
+                        }
+                    } catch (err) {
+                        errorCount++;
+                        logger.error(`❌ Ошибка при остановке сценария "${scenario.name}" (ID: ${scenario.id}): ${err.message}`, { module: 'Background' });
+                    }
+                });
+
+                // Ждем завершения всех попыток остановки
+                await Promise.allSettled(stopPromises);
+
+                const resultMessage = `Остановлено сценариев: ${stoppedCount}. Ошибок: ${errorCount}.`;
+                logger.info(`🏁 Результат остановки: ${resultMessage}`, { module: 'Background' });
+
+                sendResponse({ status: "success", message: resultMessage });
+
+            } catch (err) {
+                logger.error(`❌ Ошибка при остановке сценариев: ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
+    if (request.action === "getScenarioStatus") {
+        logger.debug("📥 Получен запрос состояния сценариев", { module: 'Background' });
+        try {
+            const runningScenarios = scenarioEngine.getRunningScenarios();
+            const isRunning = runningScenarios.length > 0;
+            // Можно также отправить список запущенных сценариев, если нужно
+            sendResponse({ status: "success", isRunning: isRunning, runningScenarios: runningScenarios });
+            logger.debug(`📤 Отправлено состояние сценариев: isRunning=${isRunning}`, { module: 'Background' });
+        } catch (err) {
+            logger.error(`❌ Ошибка при получении состояния сценариев: ${err.message}`, { module: 'Background' });
+            sendResponse({ status: "error", message: err.message });
+        }
+        return true; // keep channel open for async response (на случай, если getRunningScenarios станет асинхронным в будущем)
+    }
+
+    if (request.action === "runScenario") {
+        const { scenarioId, params = {} } = request;
+        logger.info(`📥 Получена команда на запуск сценария "${scenarioId}"`, { module: 'Background', meta: params });
+
+        (async () => {
+            try {
+                let activeTabId = null;
+                try {
+                    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                    activeTabId = activeTab?.id || null;
+                } catch (e) {
+                    logger.warn("Не удалось получить активную вкладку для сценария", { module: 'Background' });
+                }
+
+                // Определяем, какой сценарий запускать
+                let scenarioToRun;
+                if (scenarioId === 'parse-recommendation') {
+                    scenarioToRun = parseRecommendationScenario;
+                } else if (scenarioId === 'test-countdown') {
+                    scenarioToRun = testCountdownScenario;
+                    // } else if (scenarioId === '...') {
+                    //     scenarioToRun = ...;
+                } else {
+                    throw new Error(`Неизвестный ID сценария: ${scenarioId}`);
+                }
+
+                // Передаем параметры в сценарий через context.params
+                const instanceId = await scenarioEngine.run(scenarioToRun, params, activeTabId);
+                logger.info(`🏁 Сценарий "${scenarioId}" запущен с ID: ${instanceId}`, { module: 'Background' });
+
+                // 👇 Отправляем подтверждение запуска с ID инстанса
+                sendResponse({ status: "started", instanceId: instanceId });
+
+                // Опционально: отправляем сообщение в popup о начале (если нужно немедленное уведомление до завершения сценария)
+                // chrome.runtime.sendMessage({ type: "scenarioStatus", status: "started", message: `Сценарий "${scenarioId}" начат.`, level: "info" });
+
+            } catch (err) {
+                logger.error(`❌ Ошибка запуска сценария "${scenarioId}": ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+
+        return true; // keep channel open for async response
+    }
 
     if (request.action === "clearImportedTableData") {
         (async () => {
@@ -192,33 +320,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Для асинхронной отправки ответа
     }
 
-    if (request.action === "startAnalysis") {
-        const params = request.params || {}; // Получаем параметры
-        logger.info("📥 Получена команда на запуск анализа", { module: 'Background', meta: params });
-
-        // Запускаем сценарий асинхронно
-        (async () => {
-            try {
-                let activeTabId = null;
-                try {
-                    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-                    activeTabId = activeTab?.id || null;
-                } catch (e) {
-                    logger.warn("Не удалось получить активную вкладку для сценария", { module: 'Background' });
-                }
-
-                // Передаем параметры в сценарий через context.params
-                const instanceId = await scenarioEngine.run(testCountdownScenario, params, activeTabId);
-                logger.info(`🏁 Анализ запущен с ID: ${instanceId}`, { module: 'Background' });
-
-            } catch (err) {
-                logger.error(`❌ Ошибка запуска анализа: ${err.message}`, { module: 'Background' });
-            }
-        })();
-
-        return true; // Для асинхронной отправки ответа
-    }
-
     if (request.action === "getTableData") {
         (async () => {
             try {
@@ -269,34 +370,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         })();
         return true;
-    }
-    // 👇 НОВОЕ: обработка команды на запуск тестового сценария
-    if (request.action === "runTestScenario") {
-        // Получаем параметры из запроса
-        const params = request.params || {};
-        logger.info("📥 Получена команда на запуск тестового сценария", { module: 'Background', meta: params });
-
-        // Запускаем сценарий асинхронно
-        (async () => {
-            try {
-                let activeTabId = null;
-                try {
-                    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-                    activeTabId = activeTab?.id || null;
-                } catch (e) {
-                    logger.warn("Не удалось получить активную вкладку для сценария", { module: 'Background' });
-                }
-
-                // Передаем параметры в сценарий через context.params
-                const instanceId = await scenarioEngine.run(testCountdownScenario, params, activeTabId);
-                logger.info(`🏁 Тестовый сценарий запущен с ID: ${instanceId}`, { module: 'Background' });
-
-            } catch (err) {
-                logger.error(`❌ Ошибка запуска тестового сценария: ${err.message}`, { module: 'Background' });
-            }
-        })();
-
-        return true; // Для асинхронной отправки ответа
     }
 
     // TODO: Здесь будут обработчики для других действий (parseOnce, startAutoAnalysis и т.д.)

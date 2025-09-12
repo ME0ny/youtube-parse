@@ -1,3 +1,4 @@
+
 // popup/popup.js
 import { SettingsSection } from './components/SettingsSection.js';
 import { ControlSection } from './components/ControlSection.js';
@@ -10,6 +11,9 @@ class PopupApp {
         this.initComponents(); // Инициализируем компоненты и загружаем начальные данные
         this.bindEvents(); // Привязываем события popup-контроллера
         this.loadState(); // Загружаем сохранённое состояние UI
+        this.updateScenarioControlButtons(false);
+        this.checkScenarioStatusOnLoad();
+        this.isScenarioLaunchInProgress = false;
     }
 
     initElements() {
@@ -24,17 +28,16 @@ class PopupApp {
         this.importDataBtn = document.getElementById('importDataBtn');
         this.clearImportedBtn = document.getElementById('clearImportedBtn');
 
-        this.startBtn = document.getElementById('startBtn');
+        this.runScenarioBtn = document.getElementById('runScenarioBtn');
         this.stopBtn = document.getElementById('stopBtn');
         this.copyTableBtn = document.getElementById('copyTableBtn');
         this.clearTableBtn = document.getElementById('clearTableBtn');
         this.clearLogBtn = document.getElementById('clearLogBtn');
 
         // Элемент для нового функционала
-        this.runTestScenarioBtn = document.getElementById('runTestScenarioBtn');
-        if (!this.runTestScenarioBtn) {
-            console.error("Кнопка 'runTestScenarioBtn' не найдена в DOM");
-        }
+
+        this.scenarioSelector = document.getElementById('scenarioSelector');
+
         document.addEventListener('importData', (e) => {
             this.handleImportData(e.detail); // Передаём detail как аргумент
         });
@@ -62,24 +65,19 @@ class PopupApp {
         this.importDataBtn.addEventListener('click', () => this.handleImport());
         this.clearImportedBtn.addEventListener('click', () => this.handleClearImported());
 
-        this.startBtn.addEventListener('click', () => this.handleStart());
+        this.runScenarioBtn.addEventListener('click', () => this.handleRunScenario());
         this.stopBtn.addEventListener('click', () => this.handleStop());
         this.copyTableBtn.addEventListener('click', () => this.handleCopyTable());
         this.clearTableBtn.addEventListener('click', () => this.handleClearTable());
         this.clearLogBtn.addEventListener('click', () => this.handleClearLog());
 
-        // Обработчик для новой кнопки
-        if (this.runTestScenarioBtn) {
-            this.runTestScenarioBtn.addEventListener('click', () => this.handleRunTestScenario());
-        }
+        this.runScenarioBtn.addEventListener('click', () => this.handleRunScenario());
 
         // --- Слушатель сообщений от background ---
         this.addMessageListener();
     }
 
-    // --- State Management ---
     saveSettings() {
-
         // Определяем состояние для сохранения
         const isSettingsCollapsed = this.settingsSection.classList.contains('collapsed');
 
@@ -137,6 +135,19 @@ class PopupApp {
     // --- Message Listener ---
     addMessageListener() {
         this.messageListener = (request, sender, sendResponse) => {
+            if (request.type === 'scenarioStatus') {
+                console.log("PopupApp: Received scenarioStatus message", request);
+                if (request.status === 'started') {
+                    this.updateScenarioControlButtons(true);
+                } else if (request.status === 'stopped' || request.status === 'finished') {
+                    this.updateScenarioControlButtons(false);
+                }
+                // Логируем сообщение от сценария, если оно есть
+                if (request.message) {
+                    document.dispatchEvent(new CustomEvent('log', { detail: { message: request.message, level: request.level || 'info' } }));
+                }
+            }
+
             if (request.type === 'dataUpdated') {
                 this.table.loadInitialData();
             }
@@ -191,30 +202,90 @@ class PopupApp {
         // В реальном сценарии здесь будет sendMessage для очистки в background
     }
 
-    async handleStart() {
-        // Получаем параметры из UI
+    async handleRunScenario() {
+        if (this.isScenarioLaunchInProgress) {
+            console.warn("[PopupApp] Запуск сценария уже выполняется, игнорируем клик.");
+            return;
+        }
+        this.isScenarioLaunchInProgress = true; // <-- Установить флаг
+        // 1. Получаем ID выбранного сценария
+        const selectedScenarioId = this.scenarioSelector.value;
+        if (!selectedScenarioId) {
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Не выбран сценарий для запуска', level: 'error' } }));
+            return;
+        }
+
+        // 2. Получаем параметры из UI
         const iterations = parseInt(this.iterationsInput.value) || 10;
-        const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart';
+        const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'all_videos';
 
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Запуск анализа: ${iterations} итераций, режим: ${mode}`, level: 'info' } }));
+        // 3. Логируем начало
+        const scenarioName = this.scenarioSelector.options[this.scenarioSelector.selectedIndex].text;
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Запуск сценария "${scenarioName}": ${iterations} итераций, режим: ${mode}`, level: 'info' } }));
 
-        // Отправляем сообщение в background с параметрами
         try {
-            await chrome.runtime.sendMessage({
-                action: "startAnalysis",
-                params: { iterations, mode } // Передаем параметры
+            // 4. Отправляем сообщение в background с параметрами
+            const response = await chrome.runtime.sendMessage({
+                action: "runScenario",
+                scenarioId: selectedScenarioId,
+                params: {
+                    iterations,
+                    mode,
+                    // Параметры для скроллинга (можно сделать настройками позже)
+                    count: 16,
+                    delayMs: 1500,
+                    step: 1000
+                }
             });
-            // UI обновится через сообщения от background
+
+            if (response && response.status === "started") {
+                console.log("[PopupApp] Сценарий успешно запущен в background, обновляем состояние кнопок.");
+                // 5. Обновляем состояние кнопок
+                this.updateScenarioControlButtons(true);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Сценарий запущен. ID: ${response.instanceId}`, level: 'success' } }));
+            } else {
+                const errorMsg = response?.message || 'Неизвестная ошибка при запуске';
+                console.error("[PopupApp] Ошибка запуска сценария:", errorMsg);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка запуска сценария: ${errorMsg}`, level: 'error' } }));
+                // Возвращаем кнопки в исходное состояние в случае ошибки
+                this.updateScenarioControlButtons(false);
+            }
+
         } catch (err) {
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка запуска анализа: ${err.message}`, level: 'error' } }));
+            console.error("[PopupApp] Исключение при запуске сценария:", err);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи при запуске сценария: ${err.message}`, level: 'error' } }));
+            // Возвращаем кнопки в исходное состояние в случае ошибки
+            this.updateScenarioControlButtons(false);
+        } finally {
+            // Сбросить флаг в любом случае, после попытки запуска
+            this.isScenarioLaunchInProgress = false; // <-- Сбросить флаг
         }
     }
 
-    handleStop() {
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: '⏹️ Анализ остановлен (имитация)', level: 'warn' } }));
-        // В реальном сценарии здесь будет sendMessage для остановки в background
-        this.startBtn.disabled = false;
-        this.stopBtn.disabled = true;
+    async handleStop() {
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: '📤 Отправка команды на остановку всех сценариев...', level: 'info' } }));
+
+        try {
+            // Отправляем сообщение в background для остановки всех сценариев
+            const response = await chrome.runtime.sendMessage({
+                action: "stopAllScenarios"
+            });
+
+            if (response && response.status === "success") {
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ ${response.message}`, level: 'warn' } }));
+                // Обновляем состояние кнопок
+                this.updateScenarioControlButtons(false);
+            } else {
+                const errorMsg = response?.message || 'Неизвестная ошибка при остановке';
+                console.error("[PopupApp] Ошибка остановки сценариев:", errorMsg);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка остановки сценариев: ${errorMsg}`, level: 'error' } }));
+                // Оставляем кнопки в состоянии "запущено", так как остановка не удалась
+            }
+        } catch (err) {
+            console.error("[PopupApp] Исключение при остановке сценариев:", err);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи при остановке сценариев: ${err.message}`, level: 'error' } }));
+            // Оставляем кнопки в состоянии "запущено", так как остановка не удалась
+        }
     }
 
     async handleCopyTable() {
@@ -261,24 +332,6 @@ class PopupApp {
         }
     }
 
-    async handleRunTestScenario() {
-        // Получаем параметры из UI
-        const iterations = parseInt(this.iterationsInput.value) || 10;
-        const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart';
-
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Запуск тестового сценария: ${iterations} шагов, режим: ${mode}`, level: 'info' } }));
-        try {
-            // Отправляем сообщение в background с параметрами
-            await chrome.runtime.sendMessage({
-                action: "runTestScenario",
-                params: { iterations, mode } // Передаем параметры
-            });
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: "✅ Команда на запуск тестового сценария отправлена.", level: "success" } }));
-        } catch (err) {
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка отправки команды: ${err.message}`, level: "error" } }));
-        }
-    }
-
     async handleImportData(eventDetail) {
         const dataToImport = eventDetail && eventDetail.data;
 
@@ -309,6 +362,55 @@ class PopupApp {
         } catch (err) {
             console.error("[PopupApp] Ошибка отправки данных в background:", err);
             document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи с background: ${err.message}`, level: 'error' } }));
+        }
+    }
+
+    /**
+     * Обновляет состояние кнопок управления сценариями.
+     * @param {boolean} isRunning - Запущен ли сейчас какой-либо сценарий.
+     */
+    updateScenarioControlButtons(isRunning) {
+        if (this.runScenarioBtn && this.stopBtn) {
+            this.runScenarioBtn.disabled = isRunning;
+            this.stopBtn.disabled = !isRunning;
+        }
+    }
+
+    /**
+     * Проверяет статус выполнения сценариев при загрузке popup.
+     * Обновляет состояние кнопок управления соответственно.
+     */
+    async checkScenarioStatusOnLoad() {
+        console.log("[PopupApp] Проверка статуса сценариев при загрузке...");
+        try {
+            const response = await chrome.runtime.sendMessage({
+                action: "getScenarioStatus"
+            });
+
+            if (response && response.status === "success") {
+                const isRunning = response.isRunning;
+                console.log(`[PopupApp] Статус сценариев при загрузке: isRunning=${isRunning}`);
+                this.updateScenarioControlButtons(isRunning);
+
+                // Опционально: можно отобразить уведомление, если сценарии выполняются
+                if (isRunning) {
+                    const count = response.runningScenarios?.length || 1;
+                    document.dispatchEvent(new CustomEvent('log', {
+                        detail: {
+                            message: `ℹ️ При загрузке popup обнаружено запущенных сценариев: ${count}. Кнопка "Остановить" активна.`,
+                            level: 'info'
+                        }
+                    }));
+                }
+            } else {
+                console.warn("[PopupApp] Не удалось получить статус сценариев при загрузке:", response?.message);
+                // В случае ошибки оставляем кнопки в начальном состоянии (не запущено)
+                this.updateScenarioControlButtons(false);
+            }
+        } catch (err) {
+            console.error("[PopupApp] Ошибка при проверке статуса сценариев при загрузке:", err);
+            // В случае ошибки оставляем кнопки в начальном состоянии (не запущено)
+            this.updateScenarioControlButtons(false);
         }
     }
 }

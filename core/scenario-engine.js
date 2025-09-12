@@ -1,3 +1,4 @@
+
 // core/scenario-engine.js
 import { logger } from '../background/background.js'; // Импортируем логгер
 
@@ -27,6 +28,7 @@ export class ScenarioEngine {
      * @param {number} [tabId] - ID вкладки, если применимо.
      * @returns {Promise<string>} ID запущенного экземпляра сценария.
      */
+
     async run(scenarioDefinition, params = {}, tabId = null) {
         const instanceId = this.#generateId();
         const controller = new AbortController();
@@ -47,10 +49,24 @@ export class ScenarioEngine {
                 if (controller.signal.aborted) {
                     throw new Error('Сценарий остановлен пользователем.');
                 }
-            }
+            },
+            // Передаем контроллер в контекст, чтобы получить к нему доступ в finally
+            controller: controller
         };
 
         this.#runningScenarios.set(instanceId, { definition: scenarioDefinition, context, controller });
+
+        // 👇 Уведомляем popup о начале сценария
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+            chrome.runtime.sendMessage({
+                type: "scenarioStatus",
+                status: "started",
+                message: `[ScenarioEngine] Запуск сценария "${scenarioDefinition.name}" (ID: ${instanceId})`,
+                level: "info"
+            }).catch(err => {
+                console.debug("Не удалось отправить сообщение о начале сценария в popup:", err);
+            });
+        }
 
         context.log(`[ScenarioEngine] Запуск сценария "${scenarioDefinition.name}" (ID: ${instanceId})`, { module: 'ScenarioEngine' });
 
@@ -66,8 +82,26 @@ export class ScenarioEngine {
             }
         } finally {
             this.#runningScenarios.delete(instanceId);
-        }
 
+            // 👇 Уведомляем popup о завершении сценария
+            // Теперь мы можем получить доступ к controller через context
+            const isAborted = context.controller.signal.aborted;
+            const finalStatus = isAborted ? "stopped" : "finished";
+            const finalMessage = isAborted ?
+                `[ScenarioEngine] Сценарий "${scenarioDefinition.name}" (ID: ${instanceId}) был остановлен.` :
+                `[ScenarioEngine] Сценарий "${scenarioDefinition.name}" (ID: ${instanceId}) завершен.`;
+
+            if (typeof chrome !== 'undefined' && chrome.runtime) {
+                chrome.runtime.sendMessage({
+                    type: "scenarioStatus",
+                    status: finalStatus,
+                    message: finalMessage,
+                    level: "info"
+                }).catch(err => {
+                    console.debug("Не удалось отправить сообщение о завершении сценария в popup:", err);
+                });
+            }
+        }
         return instanceId;
     }
 
@@ -106,3 +140,4 @@ export class ScenarioEngine {
         return `scenario_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 }
+

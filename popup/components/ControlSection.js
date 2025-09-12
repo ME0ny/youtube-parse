@@ -1,10 +1,14 @@
 export class ControlSection {
     constructor() {
-        this.startBtn = document.getElementById('startBtn');
+        // Обновляем ID элементов в соответствии с popup.html
+        this.runScenarioBtn = document.getElementById('runScenarioBtn'); // <-- Изменено
         this.stopBtn = document.getElementById('stopBtn');
         this.copyTableBtn = document.getElementById('copyTableBtn');
         this.clearTableBtn = document.getElementById('clearTableBtn');
         this.clearLogBtn = document.getElementById('clearLogBtn');
+
+        // Добавляем ссылку на селектор сценариев
+        this.scenarioSelector = document.getElementById('scenarioSelector'); // <-- Новое
 
         this.init();
     }
@@ -15,14 +19,9 @@ export class ControlSection {
         document.addEventListener('control:disableStart', () => this.disableStart());
 
         // Привязываем обработчики событий UI
-        this.startBtn.addEventListener('click', () => {
-            const iterations = parseInt(document.getElementById('iterationsInput').value) || 10;
-            const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart';
-            document.dispatchEvent(new CustomEvent('startAnalysis', { detail: { iterations, mode } }));
-        });
 
         this.stopBtn.addEventListener('click', () => {
-            document.dispatchEvent(new CustomEvent('stopAnalysis'));
+            document.dispatchEvent(new CustomEvent('stopAnalysis')); // Это событие уже отправляется
         });
 
         this.copyTableBtn.addEventListener('click', () => {
@@ -66,13 +65,15 @@ export class ControlSection {
     }
 
     enableStart() {
-        this.startBtn.disabled = false;
-        this.stopBtn.disabled = true;
+        // Логика включена в PopupApp.updateScenarioControlButtons
+        if (this.runScenarioBtn) this.runScenarioBtn.disabled = false;
+        if (this.stopBtn) this.stopBtn.disabled = true;
     }
 
     disableStart() {
-        this.startBtn.disabled = true;
-        this.stopBtn.disabled = false;
+        // Логика включена в PopupApp.updateScenarioControlButtons
+        if (this.runScenarioBtn) this.runScenarioBtn.disabled = true;
+        if (this.stopBtn) this.stopBtn.disabled = false;
     }
 
     dispatchEvent(type, detail) {

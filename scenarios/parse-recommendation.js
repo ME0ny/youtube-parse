@@ -1,0 +1,59 @@
+
+// scenarios/parse-recommendation.js
+import { scrollPageNTimes } from '../core/utils/scroller.js';
+// import { logger } from '../background/background.js'; // Будет использоваться через context.log
+
+/**
+ * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
+ */
+export const parseRecommendationScenario = {
+    id: 'parse-recommendation',
+    name: 'Парсинг рекомендаций',
+    description: 'Прокручивает страницу с рекомендациями и готовит данные для парсинга.',
+
+    /**
+     * @param {import('../core/types/scenario.types.js').ScenarioContext} context
+     */
+    async execute(context) {
+        const { log, params = {}, tabId, abortSignal } = context;
+
+        // Параметры по умолчанию, как указано в задаче
+        const scrollParams = {
+            count: parseInt(params.count, 10) || 16,
+            delayMs: parseInt(params.delayMs, 10) || 1500,
+            step: parseInt(params.step, 10) || 1000
+        };
+
+        log(`🚀 Сценарий "Парсинг рекомендаций" запущен.`, { module: 'ParseRecommendation' });
+        log(`🔧 Параметры скроллинга: ${JSON.stringify(scrollParams)}`, { module: 'ParseRecommendation' });
+
+        try {
+            // Проверяем, не было ли запроса на остановку до начала
+            await abortSignal();
+
+            // --- 1. Скроллинг страницы ---
+            await scrollPageNTimes(context, scrollParams.count, scrollParams.delayMs, scrollParams.step);
+
+            // --- 2. TODO: Парсинг и подсветка (в следующем шаге) ---
+            // const parsedCards = await parseAndHighlight(context);
+            // log(`✅ Найдено и подсвечено ${parsedCards.length} видео.`, { module: 'ParseRecommendation' });
+
+            // --- 3. TODO: Скрапинг данных (в следующем шаге) ---
+            // const scrapedData = await scrapeCards(context, parsedCards);
+            // log(`💾 Скрапинг завершён. Получено данных по ${scrapedData.length} видео.`, { module: 'ParseRecommendation' });
+
+            // --- 4. TODO: Сохранение данных (в следующем шаге) ---
+            // await saveData(context, scrapedData);
+
+            log(`🎉 Сценарий "Парсинг рекомендаций" успешно завершён.`, { module: 'ParseRecommendation' });
+
+        } catch (error) {
+            if (error.message === 'Сценарий остановлен пользователем.') {
+                log(`⏹️ Сценарий "Парсинг рекомендаций" остановлен пользователем.`, { module: 'ParseRecommendation', level: 'warn' });
+            } else {
+                log(`❌ Ошибка в сценарии "Парсинг рекомендаций": ${error.message}`, { module: 'ParseRecommendation', level: 'error' });
+                throw error; // Перебрасываем ошибку для обработки в ScenarioEngine
+            }
+        }
+    }
+};
