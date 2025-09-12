@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Рекомендации Парсер</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1 class="app-title">📹 YouTube Рекомендации Парсер</h1>
+        </header>
+
+        <!-- Настройки (Collapsible) -->
+        <section id="settingsSection" class="section settings-section">
+            <div class="section-header">
+                <h2 class="section-title">⚙️ Настройки</h2>
+                <button id="toggleSettingsBtn" class="toggle-btn">▲</button>
+            </div>
+            <div id="settingsContent" class="section-content">
+                <!-- Алгоритм выбора -->
+                <div class="setting-item">
+                    <label class="setting-label">Алгоритм выбора следующего видео:</label>
+                    <div class="radio-group">
+                        <label class="radio-label">
+                            <input type="radio" name="selectionMode" value="smart" checked>
+                            Умный (по всем данным)
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="selectionMode" value="batch">
+                            Из последней подборки
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Количество итераций -->
+                <div class="setting-item">
+                    <label class="setting-label" for="iterationsInput">Количество итераций:</label>
+                    <input type="number" id="iterationsInput" class="input-field" value="10" min="1" max="1000">
+                </div>
+
+                <!-- Импорт данных -->
+                <div class="setting-item">
+                    <label class="setting-label">Импорт данных (CSV/TSV):</label>
+                    <textarea id="importTextarea" class="import-textarea"
+                        placeholder="Вставьте данные... Название,ID,Просмотры,Канал,Исходное видео,Миниатюра"></textarea>
+                    <div class="button-group">
+                        <button id="importDataBtn" class="btn btn-primary">📂 Загрузить данные</button>
+                        <button id="clearImportedBtn" class="btn btn-secondary">🗑️ Очистить импортированные</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Управление -->
+        <section id="controlSection" class="section control-section">
+            <div class="section-header">
+                <h2 class="section-title">🎛️ Управление</h2>
+            </div>
+            <div class="button-group">
+                <button id="startBtn" class="btn btn-success">▶️ Запустить парсинг</button>
+                <button id="stopBtn" class="btn btn-warning" disabled>⏹️ Остановить</button>
+                <button id="copyTableBtn" class="btn btn-info">📋 Копировать таблицу</button>
+                <button id="clearTableBtn" class="btn btn-danger">🗑️ Очистить таблицу</button>
+                <button id="clearLogBtn" class="btn btn-secondary">🧹 Очистить журнал</button>
+                <button id="runTestScenarioBtn" class="btn btn-primary">🧪 Тестовый сценарий</button>
+            </div>
+        </section>
+
+        <!-- Журнал событий -->
+        <section id="logSection" class="section log-section">
+            <div class="section-header">
+                <h2 class="section-title">📋 Журнал событий</h2>
+            </div>
+            <div id="logContainer" class="log-container">
+                <!-- Логи будут вставляться сюда -->
+                <div class="log-placeholder">Журнал пуст</div>
+            </div>
+        </section>
+
+        <!-- Таблица данных -->
+        <section id="tableSection" class="section table-section">
+            <div class="section-header">
+                <h2 class="section-title">📊 Спарсенные данные</h2>
+            </div>
+            <div class="table-container">
+                <table id="dataTable" class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Название</th>
+                            <th>ID</th>
+                            <th>Просмотры</th>
+                            <th>Канал</th>
+                            <th>Исходное видео</th>
+                            <th>Миниатюра</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody">
+                        <!-- Данные будут вставляться сюда -->
+                        <tr class="table-placeholder">
+                            <td colspan="6">Таблица пуста</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <script type="module" src="./popup.js"></script>
+</body>
+
+</html>

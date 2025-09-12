@@ -1,0 +1,375 @@
+/* popup/popup.css */
+:root {
+    --primary: #4338ca;
+    --primary-hover: #3730a3;
+    --success: #16a34a;
+    --success-hover: #15803d;
+    --warning: #ca8a04;
+    --warning-hover: #a16207;
+    --danger: #dc2626;
+    --danger-hover: #b91c1c;
+    --info: #0284c7;
+    --info-hover: #0369a1;
+    --secondary: #64748b;
+    --secondary-hover: #475569;
+    --bg: #ffffff;
+    --card: #f9fafb;
+    --text: #111827;
+    --border: #e5e7eb;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: var(--bg);
+    color: var(--text);
+    padding: 16px;
+    width: 800px;
+    height: 720px;
+    overflow: hidden;
+}
+
+.app-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: 100%;
+    overflow: hidden;
+}
+
+.app-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--primary);
+    margin-bottom: 16px;
+    text-align: center;
+}
+
+.section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: var(--shadow);
+    flex-shrink: 0;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+#logSection .section-header {
+    margin-bottom: 8px;
+}
+
+.section-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+#logSection {
+    /* Позволяем секции журнала расти и сжиматься */
+    flex: 1;
+    /* Минимальная и максимальная высота для контроля */
+    min-height: 150px;
+    /* Минимальная высота, чтобы был виден хотя бы один лог */
+    /* max-height: 300px; */
+    /* Опционально: ограничить максимальную высоту */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* Скрываем переполняющий контент самой секции */
+}
+
+
+
+.toggle-btn {
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    color: var(--secondary);
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+.toggle-btn:hover {
+    background: var(--border);
+}
+
+/* Стиль для свернутого блока настроек */
+.settings-section.collapsed #settingsContent {
+    display: none;
+}
+
+.setting-item {
+    margin-bottom: 16px;
+}
+
+.setting-label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.radio-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+.radio-label:hover {
+    background: var(--border);
+}
+
+.input-field {
+    width: 100%;
+    max-width: 200px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.import-textarea {
+    width: 100%;
+    min-height: 120px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: monospace;
+    font-size: 13px;
+    resize: vertical;
+    margin-bottom: 12px;
+}
+
+.button-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow);
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: var(--primary-hover);
+}
+
+.btn-success {
+    background: var(--success);
+    color: white;
+}
+
+.btn-success:hover {
+    background: var(--success-hover);
+}
+
+.btn-warning {
+    background: var(--warning);
+    color: white;
+}
+
+.btn-warning:hover {
+    background: var(--warning-hover);
+}
+
+.btn-danger {
+    background: var(--danger);
+    color: white;
+}
+
+.btn-danger:hover {
+    background: var(--danger-hover);
+}
+
+.btn-info {
+    background: var(--info);
+    color: white;
+}
+
+.btn-info:hover {
+    background: var(--info-hover);
+}
+
+.btn-secondary {
+    background: var(--secondary);
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: var(--secondary-hover);
+}
+
+/* Журнал */
+.log-container {
+    padding: 12px;
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.log-entry {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: monospace;
+}
+
+.log-entry:last-child {
+    border-bottom: none;
+}
+
+.log-level-info {
+    color: var(--text);
+}
+
+.log-level-success {
+    color: var(--success);
+    font-weight: 500;
+}
+
+.log-level-warn {
+    color: var(--warning);
+}
+
+.log-level-error {
+    color: var(--danger);
+    font-weight: 500;
+}
+
+/* Placeholder для журнала */
+.log-placeholder {
+    color: var(--secondary);
+    font-style: italic;
+    text-align: center;
+    padding: 20px 0;
+}
+
+#tableSection {
+    /* Позволяем секции таблицы тоже расти и сжиматься, но с меньшим приоритетом */
+    flex: 2;
+    /* Минимальная высота */
+    min-height: 150px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* Скрываем переполняющий контент самой секции */
+}
+
+#tableSection .section-header {
+    margin-bottom: 8px;
+}
+
+/* Таблица */
+.table-container {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    height: 100%;
+}
+
+.data-table th,
+.data-table td {
+    padding: 8px;
+    text-align: left;
+    border: 1px solid var(--border);
+}
+
+.data-table th {
+    background-color: var(--card);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.data-table tr:nth-child(even) {
+    background-color: #fafafa;
+}
+
+/* Placeholder для таблицы */
+.table-placeholder td {
+    text-align: center;
+    color: var(--secondary);
+    font-style: italic;
+    padding: 40px 20px;
+}
+
+.data-table img {
+    width: 60px;
+    height: 34px;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
+/* Скроллбары */
+.log-container::-webkit-scrollbar,
+.table-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.log-container::-webkit-scrollbar-thumb,
+.table-container::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 3px;
+}
