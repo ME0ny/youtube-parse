@@ -122,6 +122,18 @@ class PopupApp {
 
             // Обработка сообщений, требующих действий на уровне popup-контроллера
             // или передачи данных между компонентами
+            if (request.type === 'dataUpdated') {
+                console.log("PopupApp: Received dataUpdated, reloading table data");
+                // Запрашиваем обновленные данные у TableSection
+                // или отправляем сообщение TableSection для перезагрузки
+                this.table.loadInitialData();
+            }
+
+            if (request.type === 'dataCleared') {
+                console.log("PopupApp: Received dataCleared");
+                document.dispatchEvent(new CustomEvent('clearTable'));
+            }
+
             if (request.type === 'newLog' && request.log) {
                 console.log("PopupApp: Received newLog, dispatching CustomEvent"); // <-- Лог для отладки
                 // Вместо вызова this.addLog (которой больше нет)
@@ -202,37 +214,31 @@ class PopupApp {
     }
 
     async handleCopyTable() {
-        // В реальном сценарии компонент TableSection будет сам обрабатывать копирование
-        // или popup будет запрашивать данные у TableSection
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: '📋 Копирование таблицы (имитация)', level: 'info' } }));
-        // Имитация
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: '📤 Подготовка таблицы для копирования...', level: 'info' } }));
         try {
-            const result = await chrome.storage.local.get(['parsedVideos']);
-            const data = result.parsedVideos || [];
-            if (data.length === 0) {
-                document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Таблица пуста, нечего копировать', level: 'error' } }));
-                return;
+            const response = await chrome.runtime.sendMessage({ action: "copyTableData" });
+            if (response.status === "success") {
+                await navigator.clipboard.writeText(response.data);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Таблица скопирована в буфер обмена', level: 'success' } }));
+            } else {
+                throw new Error(response.message);
             }
-            const headers = ['Название', 'ID', 'Просмотры', 'Канал', 'Исходное видео', 'Миниатюра'];
-            const rows = data.map(v => [
-                v.title || '', v.videoId || '', v.views || '', v.channelName || '', v.sourceVideoId || '', v.thumbnailUrl || ''
-            ]);
-            const tsvContent = [headers.join('\t'), ...rows.map(r => r.join('\t'))].join('\n');
-            await navigator.clipboard.writeText(tsvContent);
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Таблица скопирована (${data.length} строк)`, level: 'success' } }));
         } catch (err) {
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка копирования: ${err.message}`, level: 'error' } }));
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка копирования таблицы: ${err.message}`, level: 'error' } }));
         }
     }
 
     async handleClearTable() {
-        // В реальном сценарии popup отправляет сообщение в background для очистки
-        // и background потом может прислать 'dataCleared' или popup сам обновит UI
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: '📤 Отправка команды на очистку таблицы...', level: 'info' } }));
         try {
-            await chrome.storage.local.remove(['parsedVideos']);
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Таблица очищена', level: 'success' } }));
-            // Сообщаем компоненту таблицы об очистке
-            document.dispatchEvent(new CustomEvent('clearTable'));
+            const response = await chrome.runtime.sendMessage({ action: "clearTableData" });
+            if (response.status === "success") {
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Таблица очищена', level: 'success' } }));
+                // Сообщаем TableSection об очистке
+                document.dispatchEvent(new CustomEvent('clearTable'));
+            } else {
+                throw new Error(response.message);
+            }
         } catch (err) {
             document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка очистки таблицы: ${err.message}`, level: 'error' } }));
         }

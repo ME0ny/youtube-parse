@@ -10,11 +10,32 @@ export class ControlSection {
     }
 
     init() {
-        this.startBtn.addEventListener('click', () => this.handleStart());
-        this.stopBtn.addEventListener('click', () => this.handleStop());
-        this.copyTableBtn.addEventListener('click', () => this.handleCopyTable());
-        this.clearTableBtn.addEventListener('click', () => this.handleClearTable());
-        this.clearLogBtn.addEventListener('click', () => this.handleClearLog());
+        // Слушаем внутренние события от popup контроллера
+        document.addEventListener('control:enableStart', () => this.enableStart());
+        document.addEventListener('control:disableStart', () => this.disableStart());
+
+        // Привязываем обработчики событий UI
+        this.startBtn.addEventListener('click', () => {
+            const iterations = parseInt(document.getElementById('iterationsInput').value) || 10;
+            const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart';
+            document.dispatchEvent(new CustomEvent('startAnalysis', { detail: { iterations, mode } }));
+        });
+
+        this.stopBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('stopAnalysis'));
+        });
+
+        this.copyTableBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('copyTable'));
+        });
+
+        this.clearTableBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('clearTable'));
+        });
+
+        this.clearLogBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('clearLog'));
+        });
     }
 
     handleStart() {

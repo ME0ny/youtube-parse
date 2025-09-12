@@ -6,8 +6,7 @@ export class TableSection {
     }
 
     init() {
-        // Можно добавить слушатели событий, если потребуется
-        // Например, для обновления таблицы по событию
+        // Слушаем внутренние события
         document.addEventListener('updateTable', (e) => this.render(e.detail));
         document.addEventListener('clearTable', () => this.clear());
         // При инициализации сразу загружаем начальные данные
@@ -18,28 +17,19 @@ export class TableSection {
      * Загружает и отображает начальные данные из хранилища.
      */
     async loadInitialData() {
-        console.log("TableSection: Загрузка начальных данных..."); // <-- Лог для отладки
+        console.log("TableSection: Загрузка начальных данных...");
         try {
-            // Получаем данные напрямую из chrome.storage.local
-            // В будущем это можно будет заменить на вызов нового Storage API
-            const result = await chrome.storage.local.get(['parsedVideos']);
-            const data = result.parsedVideos || [];
-            console.log(`TableSection: Получено ${data.length} записей из хранилища.`); // <-- Лог для отладки
-
-            // Отображаем данные, используя существующий метод render
+            // Отправляем сообщение в background для получения данных
+            const response = await chrome.runtime.sendMessage({ action: "getTableData" });
+            const data = response?.data || [];
+            console.log(`TableSection: Получено ${data.length} записей.`);
             this.render(data);
-
         } catch (error) {
             console.error("TableSection: Ошибка при загрузке начальных данных:", error);
-            // В случае ошибки показываем placeholder "Таблица пуста"
             this.clear();
-            // Можно также залогировать ошибку в UI, если есть механизм
-            // Например, через dispatchEvent, если PopupApp слушает такие события
-            // Или временно через document.dispatchEvent(new CustomEvent('log', {...}))
             document.dispatchEvent(new CustomEvent('log', { detail: { message: `⚠️ Ошибка загрузки таблицы: ${error.message}`, level: 'error' } }));
         }
     }
-
 
     /**
      * Рендерит данные в таблицу.
@@ -52,9 +42,8 @@ export class TableSection {
             return;
         }
 
-        // Ограничиваем количество отображаемых строк для производительности, если нужно
-        // const dataToShow = data.slice(-50); // последние 50, например
-        const dataToShow = data;
+        // Ограничиваем количество отображаемых строк для производительности
+        const dataToShow = data.slice(-50); // последние 50
 
         dataToShow.forEach(video => {
             const row = document.createElement('tr');
