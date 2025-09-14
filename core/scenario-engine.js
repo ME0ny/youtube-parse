@@ -32,6 +32,7 @@ export class ScenarioEngine {
     async run(scenarioDefinition, params = {}, tabId = null) {
         const instanceId = this.#generateId();
         const controller = new AbortController();
+        console.log(`[ScenarioEngine] Начало запуска сценария ${scenarioDefinition.id}, tabId:`, tabId); // <-- Лог
 
         /** @type {ScenarioContext} */
         const context = {
@@ -46,9 +47,26 @@ export class ScenarioEngine {
                 });
             },
             abortSignal: async () => {
-                if (controller.signal.aborted) {
-                    throw new Error('Сценарий остановлен пользователем.');
-                }
+                return new Promise((resolve, reject) => {
+                    // 1. Проверка, не сработал ли сигнал уже
+                    if (controller.signal.aborted) {
+                        // Если сработал, немедленно ОТКЛОНЯЕМ промис
+                        reject(new Error('Сценарий остановлен пользователем.'));
+                        return;
+                    }
+                    // 2. Если сигнал еще не сработал, ставим слушатель
+                    controller.signal.addEventListener('abort', () => {
+                        // Когда controller.abort() будет вызван, ОТКЛАНИМ промис
+                        reject(new Error('Сценарий остановлен пользователем.'));
+                    }, { once: true });
+
+                    // 3. !!!КЛЮЧЕВОЕ ИЗМЕНЕНИЕ!!!
+                    // Если сигнал еще не сработал, это означает, что остановки нет.
+                    // Следовательно, abortSignal должен УСПЕШНО ЗАВЕРШИТЬСЯ.
+                    // Мы не ждем "реального" события abort, мы просто сообщаем,
+                    // что на данный момент остановки нет.
+                    resolve(); // <-- УСПЕШНО РАЗРЕШАЕМ промис
+                });
             },
             // Передаем контроллер в контекст, чтобы получить к нему доступ в finally
             controller: controller
@@ -91,6 +109,8 @@ export class ScenarioEngine {
                 `[ScenarioEngine] Сценарий "${scenarioDefinition.name}" (ID: ${instanceId}) был остановлен.` :
                 `[ScenarioEngine] Сценарий "${scenarioDefinition.name}" (ID: ${instanceId}) завершен.`;
 
+            console.log(`[ScenarioEngine] Отправка финального статуса "${finalStatus}" для сценария ID: ${instanceId}`); // <-- Лог
+
             if (typeof chrome !== 'undefined' && chrome.runtime) {
                 chrome.runtime.sendMessage({
                     type: "scenarioStatus",
@@ -101,6 +121,7 @@ export class ScenarioEngine {
                     console.debug("Не удалось отправить сообщение о завершении сценария в popup:", err);
                 });
             }
+            console.log(`[ScenarioEngine] Финальный статус "${finalStatus}" для сценария ID: ${instanceId} отправлен (или попытка отправки завершена).`); // <-- Лог
         }
         return instanceId;
     }

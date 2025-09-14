@@ -25,6 +25,7 @@
                 "*://*.youtube.com/*"
             ],
             "js": [
+                "content/modules/scroller.js",
                 "content/content.js"
             ],
             "run_at": "document_idle"
@@ -423,53 +424,6 @@ scenarioEngine.registerScenario(parseRecommendationScenario);
 // --- Обработка сообщений от popup ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
-    if (request.action === "getScenarioStatus") {
-        console.log("[Background] 📥 [getScenarioStatus] НАЧАЛО обработки запроса");
-        logger.debug("📥 [Background] Получен запрос состояния сценариев", { module: 'Background' });
-
-        // ВАЖНО: Вернуть true СРАЗУ, до выполнения асинхронной операции
-        // Это сигнализирует Chrome, что ответ будет асинхронным
-        (async () => {
-            try {
-                console.log("[Background] [getScenarioStatus] Начинаем выполнение асинхронной логики...");
-
-                // Имитируем возможную задержку или сложную операцию
-                // await new Promise(r => setTimeout(r, 100)); 
-
-                console.log("[Background] [getScenarioStatus] Вызываем scenarioEngine.getRunningScenarios()");
-                const runningScenarios = scenarioEngine.getRunningScenarios();
-                console.log("[Background] [getScenarioStatus] Получен список запущенных сценариев:", runningScenarios);
-
-                const isRunning = runningScenarios.length > 0;
-                const responsePayload = {
-                    status: "success",
-                    isRunning: isRunning,
-                    runningScenarios: runningScenarios
-                };
-
-                logger.debug(`📤 [Background] Отправляем состояние сценариев: isRunning=${isRunning}`, { module: 'Background' });
-                console.log("[Background] [getScenarioStatus] Подготавливаем ответ для отправки:", responsePayload);
-
-                // КРИТИЧЕСКИ ВАЖНО: sendResponse должен быть вызван в этой асинхронной функции
-                console.log("[Background] [getScenarioStatus] Вызываем sendResponse...");
-                sendResponse(responsePayload);
-                console.log("[Background] [getScenarioStatus] sendResponse вызван успешно.");
-
-            } catch (err) {
-                console.error("[Background] ❌ [getScenarioStatus] ПОЙМАНА ОШИБКА:", err);
-                logger.error(`❌ [Background] Ошибка при получении состояния сценариев: ${err.message}`, { module: 'Background' });
-
-                // Даже в случае ошибки НУЖНО вызвать sendResponse
-                console.log("[Background] [getScenarioStatus] Вызываем sendResponse с ошибкой...");
-                sendResponse({ status: "error", message: err.message });
-                console.log("[Background] [getScenarioStatus] sendResponse с ошибкой вызван.");
-            }
-        })(); // Немедленный вызов асинхронной функции
-
-        console.log("[Background] 📤 [getScenarioStatus] Обработчик вернул true, ожидаем асинхронный ответ.");
-        return true; // keep channel open for async response
-    }
-
     if (request.type === "contentLog") {
         console.log("[Background] Получен лог от content script:", request);
         // Перенаправляем лог в наш logger
@@ -534,6 +488,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         })();
         return true; // keep channel open for async response
+    }
+
+    if (request.action === "getScenarioStatus") {
+        logger.debug("📥 Получен запрос состояния сценариев", { module: 'Background' });
+        try {
+            const runningScenarios = scenarioEngine.getRunningScenarios();
+            const isRunning = runningScenarios.length > 0;
+            // Можно также отправить список запущенных сценариев, если нужно
+            sendResponse({ status: "success", isRunning: isRunning, runningScenarios: runningScenarios });
+            logger.debug(`📤 Отправлено состояние сценариев: isRunning=${isRunning}`, { module: 'Background' });
+        } catch (err) {
+            logger.error(`❌ Ошибка при получении состояния сценариев: ${err.message}`, { module: 'Background' });
+            sendResponse({ status: "error", message: err.message });
+        }
+        return true; // keep channel open for async response (на случай, если getRunningScenarios станет асинхронным в будущем)
     }
 
     if (request.action === "runScenario") {
@@ -738,6 +707,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Указывает, что ответ будет асинхронным
     }
 
+    // 👇 НОВОЕ: обработка запроса на очистку таблицы
     if (request.action === "clearTableData") {
         (async () => {
             try {
@@ -752,6 +722,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // 👇 НОВОЕ: обработка запроса на копирование таблицы (получение данных в формате TSV)
     if (request.action === "copyTableData") {
         (async () => {
             try {
@@ -775,6 +746,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // TODO: Здесь будут обработчики для других действий (parseOnce, startAutoAnalysis и т.д.)
+    // которые мы постепенно перенесем на новую архитектуру.
+    // Пока оставим заглушку или старую логику, если нужно проверить MVP.
 });
 
 logger.info("🚀 Background service worker запущен и готов к работе.", { module: 'Background' });
@@ -786,117 +760,68 @@ logger.info("🚀 Background service worker запущен и готов к ра
 === START FILE: D:\разработка\youtube-parser-os\content\content.js ===
 
 // content/content.js
+// window.performScrollNTimes доступна, так как scroller.js был подключен раньше
 
-// Хранилище для активных операций скроллинга
-const activeScrollOperations = new Map();
-
-/**
- * Прокручивает страницу N раз с задержкой.
- * @param {string} scenarioId - ID сценария (для связи с сообщением об отмене).
- * @param {number} count - сколько раз скроллить
- * @param {number} delayMs - задержка между скроллами
- * @param {number} step - на сколько пикселей скроллить за раз
- * @param {Function} onProgress - callback для обновления прогресса
- * @param {Function} onAbort - callback, вызываемый при получении команды на отмену
- * @returns {Promise<{status: string, cardCount?: number, message?: string}>}
- */
-function performScrollNTimes(scenarioId, count = 16, delayMs = 1500, step = 1000, onProgress = null) {
-    return new Promise((resolve) => {
-        let current = 0;
-        const total = count;
-        let isAborted = false;
-
-        // Функция для проверки отмены и завершения
-        const checkAndFinish = (status, message, cardCount = null) => {
-            activeScrollOperations.delete(scenarioId);
-            if (status === "aborted") {
-                resolve({ status, message });
-            } else {
-                const finalCardCount = cardCount !== null ? cardCount : document.querySelectorAll('ytd-rich-item-renderer, ytd-compact-video-renderer').length;
-                resolve({ status, cardCount: finalCardCount, message });
-            }
-        };
-
-        // Регистрируем операцию как активную
-        activeScrollOperations.set(scenarioId, {
-            abort: () => {
-                isAborted = true;
-                checkAndFinish("aborted", `Скроллинг для сценария ${scenarioId} остановлен.`);
-            }
-        });
-
-        const scroll = () => {
-            if (isAborted) {
-                checkAndFinish("aborted", `Скроллинг остановлен на шаге ${current}/${total} для сценария ${scenarioId}.`);
-                return;
-            }
-
-            if (current >= total) {
-                checkAndFinish("success", `Скроллинг завершён для сценария ${scenarioId}.`);
-                return;
-            }
-
-            window.scrollBy(0, step);
-            current++;
-
-            if (onProgress) {
-                onProgress(current, total);
-            }
-
-            setTimeout(scroll, delayMs);
-        };
-
-        console.log(`[Content Script] Начинаем скроллинг для сценария ${scenarioId}`);
-        scroll();
-    });
-}
-
+console.log("[Content Script] Загружен и готов к работе.");
 
 // Слушаем сообщения от background.js
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log("[Content Script] Получено сообщение:", request);
 
-    if (request.action === "scrollNTimes") {
-        console.log("[Content Script] Получена команда scrollNTimes:", request);
+    if (request.action === "performSingleScroll") {
+        console.log("[Content Script] Начинаем выполнение ОДНОГО скролла:", request);
 
-        (async () => {
-            try {
-                const result = await performScrollNTimes(
-                    request.scenarioId,
-                    request.count,
-                    request.delayMs,
-                    request.step,
-                    async (current, total) => {
-                        try {
-                            await chrome.runtime.sendMessage({
-                                type: "contentLog",
-                                message: `Прогресс скроллинга: ${current}/${total}`,
-                                level: "info",
-                                module: "ContentScroller"
-                            });
-                        } catch (err) {
-                            console.debug("Не удалось отправить промежуточный лог скроллинга:", err);
-                        }
-                    }
-                );
-                console.log("[Content Script] Скроллинг завершён, отправляем результат:", result);
-                sendResponse(result);
-            } catch (err) {
-                console.error("[Content Script] Ошибка скроллинга:", err);
+        // Выполняем скролл, вызывая функцию из глобальной области
+        window.performSingleScroll(request.step)
+            .then(() => {
+                console.log("[Content Script] Один скролл выполнен успешно.");
+                sendResponse({ status: "success" });
+            })
+            .catch((err) => {
+                console.error("[Content Script] Ошибка выполнения одного скролла:", err);
                 sendResponse({ status: "error", message: err.message });
-            }
-        })();
+            });
 
-        return true; // Указываем, что ответ асинхронный
+        // Возвращаем true, чтобы указать, что ответ будет асинхронным
+        return true;
     }
 
-    // Другие обработчики сообщений...
-    // if (request.action === "parseAndHighlight") { ... }
-    // if (request.action === "navigateToVideo") { ... }
-
+    console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });
 
 === END FILE: D:\разработка\youtube-parser-os\content\content.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\content\modules\scroller.js ===
+
+// content/modules/scroller.js
+
+/**
+ * Выполняет один шаг скроллинга страницы.
+ * @param {number} step - На сколько пикселей скроллить.
+ * @returns {Promise<void>}
+ */
+function performSingleScroll(step = 1000) {
+    return new Promise((resolve) => {
+        // Выполняем скролл
+        window.scrollBy(0, step);
+        // Небольшая задержка, чтобы дать странице немного отреагировать
+        // Это может помочь, если YouTube подгружает контент лениво
+        setTimeout(() => {
+            console.log(`[Content Module Scroller] Выполнен один скролл на ${step}px.`);
+            resolve();
+        }, 50); // Небольшая задержка 50мс
+    });
+}
+
+// Экспортируем функцию в глобальную область видимости
+// Теперь она будет доступна как window.performSingleScroll
+window.performSingleScroll = performSingleScroll;
+
+console.log("[Content Module Scroller] Модуль загружен и готов.");
+
+=== END FILE: D:\разработка\youtube-parser-os\content\modules\scroller.js ===
 
 --------------------------------------------------------------------------------
 
@@ -1169,6 +1094,7 @@ export class Logger {
 
 === START FILE: D:\разработка\youtube-parser-os\core\scenario-engine.js ===
 
+
 // core/scenario-engine.js
 import { logger } from '../background/background.js'; // Импортируем логгер
 
@@ -1216,34 +1142,32 @@ export class ScenarioEngine {
                 });
             },
             abortSignal: async () => {
-                if (controller.signal.aborted) {
-                    throw new Error('Сценарий остановлен пользователем.');
-                }
+                // Возвращаем Promise, который отклоняется, если controller.signal сработает.
+                // Если сигнал уже сработал (controller.abort() был вызван), то promise1 уже отклонен.
+                return new Promise((resolve, reject) => {
+                    // 1. Проверка, не сработал ли сигнал уже
+                    if (controller.signal.aborted) {
+                        // Если сработал, немедленно отклоняем промис
+                        reject(new Error('Сценарий остановлен пользователем.'));
+                        return; // Важно выйти
+                    }
+                    // 2. Если сигнал еще не сработал, ставим слушатель
+                    // Когда controller.abort() будет вызван, сработает 'abort' на signal
+                    controller.signal.addEventListener('abort', () => {
+                        reject(new Error('Сценарий остановлен пользователем.'));
+                    }, { once: true }); // { once: true } гарантирует, что слушатель сработает только один раз
+                    // 3. Если до этого никто не вызвал controller.abort(), промис остается неразрешенным
+                    // и функция abortSignal "ждёт". Это нормально.
+                    // resolve() не вызывается никогда напрямую здесь, только reject через 'abort'.
+                    // resolve() не нужен, потому что задача abortSignal - только уведомить об остановке.
+                });
             },
-            controller: controller // Передаем контроллер в контекст
+            // Передаем контроллер в контекст, чтобы получить к нему доступ в finally
+            controller: controller
         };
 
-        if (tabId) { // Убедимся, что у нас есть ID вкладки
-            const abortHandler = async () => {
-                logger.debug(`[ScenarioEngine] Получен сигнал отмены для сценария ${instanceId}. Уведомляем content script.`, { module: 'ScenarioEngine', contextId: instanceId });
-                try {
-                    // Отправляем сообщение в content script для остановки операций
-                    await chrome.tabs.sendMessage(tabId, {
-                        action: "abortScroll",
-                        scenarioId: instanceId // Используем тот же ID
-                    });
-                    logger.debug(`[ScenarioEngine] Сообщение об отмене отправлено в content script для сценария ${instanceId}.`, { module: 'ScenarioEngine', contextId: instanceId });
-                } catch (err) {
-                    // Это нормально, если вкладка закрыта или content script не готов
-                    logger.debug(`[ScenarioEngine] Не удалось отправить сообщение об отмене в content script для сценария ${instanceId}: ${err.message}`, { module: 'ScenarioEngine', contextId: instanceId });
-                }
-            };
-            controller.signal.addEventListener('abort', abortHandler, { once: true });
-            // Храним ссылку на обработчик, если нужно будет отменить подписку раньше (обычно не нужно с {once: true})
-            // context._abortHandler = abortHandler; 
-        }
-
         this.#runningScenarios.set(instanceId, { definition: scenarioDefinition, context, controller });
+
         // 👇 Уведомляем popup о начале сценария
         if (typeof chrome !== 'undefined' && chrome.runtime) {
             chrome.runtime.sendMessage({
@@ -1279,6 +1203,8 @@ export class ScenarioEngine {
                 `[ScenarioEngine] Сценарий "${scenarioDefinition.name}" (ID: ${instanceId}) был остановлен.` :
                 `[ScenarioEngine] Сценарий "${scenarioDefinition.name}" (ID: ${instanceId}) завершен.`;
 
+            console.log(`[ScenarioEngine] Отправка финального статуса "${finalStatus}" для сценария ID: ${instanceId}`); // <-- Лог
+
             if (typeof chrome !== 'undefined' && chrome.runtime) {
                 chrome.runtime.sendMessage({
                     type: "scenarioStatus",
@@ -1289,6 +1215,7 @@ export class ScenarioEngine {
                     console.debug("Не удалось отправить сообщение о завершении сценария в popup:", err);
                 });
             }
+            console.log(`[ScenarioEngine] Финальный статус "${finalStatus}" для сценария ID: ${instanceId} отправлен (или попытка отправки завершена).`); // <-- Лог
         }
         return instanceId;
     }
@@ -1328,6 +1255,8 @@ export class ScenarioEngine {
         return `scenario_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 }
+
+
 
 === END FILE: D:\разработка\youtube-parser-os\core\scenario-engine.js ===
 
@@ -1429,54 +1358,101 @@ export class ScenarioEngine {
 === START FILE: D:\разработка\youtube-parser-os\core\utils\scroller.js ===
 
 // core/utils/scroller.js
-import { logger } from '../background/background.js'; // Для типов или если нужно напрямую
 
 /**
- * Прокручивает страницу YouTube N раз с задержкой.
- * @param {Object} context - Контекст сценария для логирования. Должен содержать controller.signal.
- * @param {string} context.id - ID инстанса сценария.
- * @param {number} context.tabId - ID активной вкладки.
- * @param {AbortController} context.controller - Контроллер для отмены.
- * @param {Function} context.log - Функция логирования.
+ * Выполняет N шагов скроллинга страницы с задержками и отслеживанием прогресса.
+ * @param {Object} context - Контекст сценария для логирования и проверки прерывания.
  * @param {number} [count=16] - Сколько раз скроллить.
  * @param {number} [delayMs=1500] - Задержка между скроллами (мс).
  * @param {number} [step=1000] - На сколько пикселей скроллить за раз.
  * @returns {Promise<void>}
  */
 export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step = 1000) {
-    const { log, id: scenarioId, tabId, controller } = context;
-
-    if (!controller || !controller.signal) {
-        log(`⚠️ Контроллер отмены не найден, скроллинг не может быть остановлен.`, { module: 'Scroller', level: 'warn' });
-    }
-
+    const { log, abortSignal } = context;
     log(`🔄 Начинаем скроллинг страницы: ${count} раз(а), шаг ${step}px, задержка ${delayMs}мс`, { module: 'Scroller' });
 
     try {
-        // Отправляем сообщение в content script для выполнения скроллинга
-        // Передаем ID сценария, чтобы content script знал, для кого сообщение об отмене
-        const response = await chrome.tabs.sendMessage(tabId, {
-            action: "scrollNTimes",
-            scenarioId: scenarioId, // <-- Передаем ID сценария
-            count: count,
-            delayMs: delayMs,
-            step: step
-            // НЕ передаем signal
-        });
-
-        if (response && response.status === "success") {
-            log(`✅ Скроллинг завершён. Обработано примерно ${response.cardCount} карточек.`, { module: 'Scroller' });
-        } else if (response && response.status === "aborted") {
-            log(`⏹️ Скроллинг остановлен пользователем.`, { module: 'Scroller', level: 'warn' });
-            throw new Error('Скроллинг остановлен пользователем.');
-        } else {
-            const errorMsg = response?.message || "Неизвестная ошибка скроллинга";
-            log(`❌ Ошибка скроллинга: ${errorMsg}`, { module: 'Scroller', level: 'error' });
+        // --- ПРОВЕРКА tabId ---
+        if (typeof context.tabId !== 'number' || context.tabId < 0) {
+            const errorMsg = `Недействительный tabId для sendMessage: ${context.tabId}. Убедитесь, что сценарий запущен на активной вкладке YouTube.`;
+            log(`❌ ${errorMsg}`, { module: 'Scroller', level: 'error' });
             throw new Error(errorMsg);
         }
+        // --- КОНЕЦ ПРОВЕРКИ tabId ---
+
+        for (let i = 1; i <= count; i++) {
+            // 1. Проверяем, не был ли запрос на остановку/прерывание
+            await abortSignal();
+
+            // 2. Отправляем сообщение content script для выполнения ОДНОГО скролла
+            log(`⏳ Выполняем скролл ${i}/${count}...`, { module: 'Scroller' });
+
+            // --- ПОПЫТКА С БЛОКОМ try/catch ДЛЯ sendMessage ---
+            let response;
+            try {
+                response = await chrome.tabs.sendMessage(
+                    context.tabId,
+                    {
+                        action: "performSingleScroll",
+                        step: step
+                    }
+                );
+            } catch (sendMsgErr) {
+                log(`❌ Ошибка sendMessage для скролла ${i}/${count}: ${sendMsgErr.message}`, { module: 'Scroller', level: 'error' });
+                throw new Error(`Ошибка связи со страницей YouTube: ${sendMsgErr.message}`);
+            }
+            // --- КОНЕЦ ПОПЫТКИ ---
+
+            if (response && response.status === "success") {
+                log(`✅ Скролл ${i}/${count} выполнен.`, { module: 'Scroller' });
+            } else {
+                const errorMsg = response?.message || "Неизвестная ошибка выполнения скролла";
+                log(`❌ Ошибка скролла ${i}/${count}: ${errorMsg}`, { module: 'Scroller', level: 'error' });
+                throw new Error(errorMsg);
+            }
+
+            // 3. Проверяем снова на прерывание после выполнения скролла
+            await abortSignal();
+
+            // 4. Если это не последний скролл, делаем паузу
+            if (i < count) {
+                log(`⏱️ Ожидание ${delayMs}мс перед следующим скроллом (${i + 1}/${count})...`, { module: 'Scroller' });
+                // Создаем промис, который разрешится либо по истечении времени,
+                // либо если будет вызван abortSignal (прерывание)
+                // ПРАВИЛЬНЫЙ СПОСОБ: Используем Promise.race
+                const delayPromise = new Promise(resolve => setTimeout(resolve, delayMs));
+                try {
+                    // Promise.race "гонка" между задержкой и сигналом остановки
+                    await Promise.race([delayPromise, context.abortSignal()]);
+                    // Если context.abortSignal() "выиграет" гонку (отклонится), await бросит исключение.
+                    // Если delayPromise "выиграет" (разрешится), await продолжит выполнение.
+                } catch (abortErr) {
+                    // Если abortSignal отклонился, мы попадаем сюда
+                    log(`⏹️ Скроллинг остановлен пользователем во время ожидания.`, { module: 'Scroller', level: 'warn' });
+                    throw abortErr; // Пробрасываем исключение дальше
+                }
+            }
+        }
+
+        // После завершения всех скроллов можно оценить количество карточек
+        try {
+            const countResponse = await chrome.tabs.sendMessage(context.tabId, {
+                action: "getEstimatedCardCount"
+            });
+            const cardCount = countResponse?.cardCount || 0;
+            log(`✅ Скроллинг завершён. Обработано примерно ${cardCount} карточек.`, { module: 'Scroller' });
+        } catch (countErr) {
+            console.warn("[Core Scroller] Не удалось получить количество карточек после скроллинга:", countErr);
+            log(`✅ Скроллинг завершён.`, { module: 'Scroller' });
+        }
+
     } catch (err) {
-        log(`❌ Ошибка при взаимодействии со страницей для скроллинга: ${err.message}`, { module: 'Scroller', level: 'error' });
-        throw err;
+        if (err.message === 'Сценарий остановлен пользователем.') {
+            log(`⏹️ Скроллинг остановлен пользователем.`, { module: 'Scroller', level: 'warn' });
+        } else {
+            log(`❌ Ошибка при выполнении скроллинга: ${err.message}`, { module: 'Scroller', level: 'error' });
+        }
+        throw err; // Перебрасываем ошибку для обработки в сценарии
     }
 }
 
@@ -2005,6 +1981,7 @@ body {
 
 === START FILE: D:\разработка\youtube-parser-os\popup\popup.js ===
 
+
 // popup/popup.js
 import { SettingsSection } from './components/SettingsSection.js';
 import { ControlSection } from './components/ControlSection.js';
@@ -2013,28 +1990,13 @@ import { TableSection } from './components/TableSection.js';
 
 class PopupApp {
     constructor() {
-        this.isScenarioLaunchInProgress = false; // Флаг для защиты от повторных кликов
         this.initElements();
-        // Переносим bindEvents ближе к началу, или добавляем критичные слушатели сразу
-        this.bindCriticalEventListeners(); // <-- Добавляет 'runScenario' listener
-        this.initComponents(); // Создает ControlSection
-        // this.bindEvents(); // Остальные обработчики можно оставить здесь или вызвать после
-        this.loadState();
+        this.initComponents(); // Инициализируем компоненты и загружаем начальные данные
+        this.bindEvents(); // Привязываем события popup-контроллера
+        this.loadState(); // Загружаем сохранённое состояние UI
         this.updateScenarioControlButtons(false);
         this.checkScenarioStatusOnLoad();
-        // Убедиться, что все остальные обработчики тоже добавлены
-        this.bindEvents();
-    }
-
-    bindCriticalEventListeners() {
-        // Добавляем критически важные слушатели CustomEvent как можно раньше
-        console.log("[PopupApp] Добавляем критичный слушатель CustomEvent 'runScenario'");
-        // Убедитесь, что этот обработчик добавляется ТОЛЬКО ЗДЕСЬ и НИГДЕ БОЛЬШЕ
-        document.addEventListener('runScenario', () => {
-            console.log("[PopupApp] Получено CustomEvent 'runScenario', вызываем handleRunScenario");
-            this.handleRunScenario();
-        });
-        // Добавьте сюда и другие критичные слушатели, если есть
+        this.isScenarioLaunchInProgress = false;
     }
 
     initElements() {
@@ -2056,6 +2018,7 @@ class PopupApp {
         this.clearLogBtn = document.getElementById('clearLogBtn');
 
         // Элемент для нового функционала
+
         this.scenarioSelector = document.getElementById('scenarioSelector');
 
         document.addEventListener('importData', (e) => {
@@ -2081,7 +2044,6 @@ class PopupApp {
         this.selectionModeRadios.forEach(radio => {
             radio.addEventListener('change', () => this.saveSettings());
         });
-        console.log("[PopupApp] Добавляем слушатель CustomEvent 'runScenario'");
         this.iterationsInput.addEventListener('change', () => this.saveSettings());
         this.importDataBtn.addEventListener('click', () => this.handleImport());
         this.clearImportedBtn.addEventListener('click', () => this.handleClearImported());
@@ -2091,15 +2053,14 @@ class PopupApp {
         this.copyTableBtn.addEventListener('click', () => this.handleCopyTable());
         this.clearTableBtn.addEventListener('click', () => this.handleClearTable());
         this.clearLogBtn.addEventListener('click', () => this.handleClearLog());
+
+        this.runScenarioBtn.addEventListener('click', () => this.handleRunScenario());
+
         // --- Слушатель сообщений от background ---
         this.addMessageListener();
-
-
     }
 
-    // --- State Management ---
     saveSettings() {
-
         // Определяем состояние для сохранения
         const isSettingsCollapsed = this.settingsSection.classList.contains('collapsed');
 
@@ -2157,6 +2118,21 @@ class PopupApp {
     // --- Message Listener ---
     addMessageListener() {
         this.messageListener = (request, sender, sendResponse) => {
+            if (request.type === 'scenarioStatus') {
+                console.log("PopupApp: Received scenarioStatus message", request);
+                if (request.status === 'started') {
+                    this.updateScenarioControlButtons(true);
+                } else if (request.status === 'stopped' || request.status === 'finished') {
+                    console.log("PopupApp: Updating buttons to STOPPED state based on scenarioStatus"); // <-- Лог
+                    this.updateScenarioControlButtons(false);
+                }
+                // Логируем сообщение от сценария, если оно есть
+                if (request.message) {
+                    document.dispatchEvent(new CustomEvent('log', { detail: { message: request.message, level: request.level || 'info' } }));
+                }
+                return;
+            }
+
             if (request.type === 'dataUpdated') {
                 this.table.loadInitialData();
             }
@@ -2177,19 +2153,11 @@ class PopupApp {
                 document.dispatchEvent(new CustomEvent('clearTable'));
             }
 
-            if (request.type === 'scenarioStatus') {
-                console.log("PopupApp: Received scenarioStatus message", request);
-                if (request.status === 'started') {
-                    this.updateScenarioControlButtons(true);
-                } else if (request.status === 'stopped' || request.status === 'finished') {
-                    this.updateScenarioControlButtons(false);
-                }
-                // Логируем сообщение от сценария, если оно есть
-                if (request.message) {
-                    document.dispatchEvent(new CustomEvent('log', { detail: { message: request.message, level: request.level || 'info' } }));
-                }
-            }
-
+            // TODO: Добавить обработчики для других сообщений
+            // if (request.type === 'analysisStatus') { ... }
+            // if (request.type === 'dataUpdated') { 
+            //    document.dispatchEvent(new CustomEvent('updateTable', { detail: newDataArray }));
+            // }
         };
 
         chrome.runtime.onMessage.addListener(this.messageListener);
@@ -2220,167 +2188,62 @@ class PopupApp {
     }
 
     async handleRunScenario() {
-        console.log("[PopupApp] handleRunScenario начал выполнение, isScenarioLaunchInProgress:", this.isScenarioLaunchInProgress);
-
-        // Защита от повторных кликов
         if (this.isScenarioLaunchInProgress) {
             console.warn("[PopupApp] Запуск сценария уже выполняется, игнорируем клик.");
-            document.dispatchEvent(new CustomEvent('log', {
-                detail: { message: 'ℹ️ Запуск сценария уже выполняется, подождите.', level: 'warn' }
-            }));
+            return;
+        }
+        this.isScenarioLaunchInProgress = true; // <-- Установить флаг
+        // 1. Получаем ID выбранного сценария
+        const selectedScenarioId = this.scenarioSelector.value;
+        if (!selectedScenarioId) {
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Не выбран сценарий для запуска', level: 'error' } }));
             return;
         }
 
+        // 2. Получаем параметры из UI
+        const iterations = parseInt(this.iterationsInput.value) || 10;
+        const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'all_videos';
+
+        // 3. Логируем начало
+        const scenarioName = this.scenarioSelector.options[this.scenarioSelector.selectedIndex].text;
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Запуск сценария "${scenarioName}": ${iterations} итераций, режим: ${mode}`, level: 'info' } }));
+
         try {
-            // 👇 НОВОЕ: Проверяем статус перед запуском с расширенной отладкой
-            console.log("[PopupApp] handleRunScenario: начинаем проверку статуса сценариев...");
-
-            // 1. Логируем сам объект сообщения
-            const getStatusMessage = { action: "getScenarioStatus" };
-            console.log("[PopupApp] handleRunScenario: подготавливаем сообщение для отправки:", getStatusMessage);
-
-            // 2. Логируем начало отправки
-            console.log("[PopupApp] handleRunScenario: вызываем chrome.runtime.sendMessage...");
-            let statusResponse;
-            let sendMessageError = null;
-
-            try {
-                statusResponse = await chrome.runtime.sendMessage(getStatusMessage);
-                console.log("[PopupApp] handleRunScenario: ОТПРАВКА СООБЩЕНИЯ УСПЕШНА, получаем ответ...");
-            } catch (err) {
-                sendMessageError = err;
-                console.error("[PopupApp] handleRunScenario: ПОЙМАНА ОШИБКА ПРИ ОТПРАВКЕ СООБЩЕНИЯ:", err);
-                console.error("[PopupApp] handleRunScenario: stack trace ошибки отправки:", err?.stack);
-            }
-
-            // 3. Проверяем результат
-            if (sendMessageError) {
-                console.error("[PopupApp] handleRunScenario: ошибка отправки сообщения getScenarioStatus, прерываем запуск.");
-                document.dispatchEvent(new CustomEvent('log', {
-                    detail: { message: `❌ Ошибка связи при проверке статуса: ${sendMessageError.message}`, level: 'error' }
-                }));
-                // Можно выбросить ошибку, чтобы она попала в общий catch
-                throw sendMessageError;
-            }
-
-            console.log("[PopupApp] handleRunScenario: ответ на проверку статуса (сырой):", statusResponse);
-
-            // 4. Проверяем формат ответа
-            if (!statusResponse) {
-                console.warn("[PopupApp] handleRunScenario: ответ от background.js пустой или undefined.");
-                document.dispatchEvent(new CustomEvent('log', {
-                    detail: { message: '⚠️ Получен пустой ответ от background.js при проверке статуса.', level: 'warn' }
-                }));
-                // Можно продолжить или прервать, решим позже
-            } else if (typeof statusResponse !== 'object') {
-                console.warn("[PopupApp] handleRunScenario: ответ от background.js не является объектом:", typeof statusResponse, statusResponse);
-                document.dispatchEvent(new CustomEvent('log', {
-                    detail: { message: '⚠️ Получен неожиданный формат ответа от background.js при проверке статуса.', level: 'warn' }
-                }));
-            }
-
-            if (statusResponse?.status === "success" && statusResponse.isRunning) {
-                console.warn("[PopupApp] Сценарий уже запущен, запуск отменен.");
-                document.dispatchEvent(new CustomEvent('log', {
-                    detail: {
-                        message: 'ℹ️ Сценарий уже запущен. Остановите текущий перед запуском нового.',
-                        level: 'warn'
-                    }
-                }));
-                return; // Просто выходим, не устанавливая флаг
-            }
-            console.log("[PopupApp] handleRunScenario: проверка статуса пройдена.");
-            // 👆 НОВОЕ (расширенная отладка)
-
-            // Устанавливаем флаг только после всех проверок
-            this.isScenarioLaunchInProgress = true;
-            console.log("[PopupApp] handleRunScenario: флаг isScenarioLaunchInProgress установлен в true.");
-
-            // ... (остальной код функции без изменений, добавим логи и туда) ...
-
-            // 1. Получаем ID выбранного сценария
-            const selectedScenarioId = this.scenarioSelector.value;
-            console.log("[PopupApp] handleRunScenario: selectedScenarioId =", selectedScenarioId);
-            if (!selectedScenarioId) {
-                console.log("[PopupApp] handleRunScenario: сценарий не выбран, отправляем лог об ошибке.");
-                document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Не выбран сценарий для запуска', level: 'error' } }));
-                this.isScenarioLaunchInProgress = false; // Сбросим флаг
-                return;
-            }
-
-            // 2. Получаем параметры из UI
-            const iterations = parseInt(this.iterationsInput.value) || 10;
-            const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'all_videos';
-            console.log("[PopupApp] handleRunScenario: параметры получены: iterations =", iterations, ", mode =", mode);
-
-            // 3. Логируем начало
-            const scenarioName = this.scenarioSelector.options[this.scenarioSelector.selectedIndex].text;
-            document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Запуск сценария "${scenarioName}": ${iterations} итераций, режим: ${mode}`, level: 'info' } }));
-            console.log("[PopupApp] handleRunScenario: отправлен лог о начале запуска.");
-
             // 4. Отправляем сообщение в background с параметрами
-            console.log("[PopupApp] handleRunScenario: отправляем сообщение runScenario в background...");
-            const runMessage = {
+            const response = await chrome.runtime.sendMessage({
                 action: "runScenario",
                 scenarioId: selectedScenarioId,
                 params: {
                     iterations,
                     mode,
-                    count: 16,
+                    // Параметры для скроллинга (можно сделать настройками позже)
+                    count: 5,
                     delayMs: 1500,
                     step: 1000
                 }
-            };
-            console.log("[PopupApp] handleRunScenario: сообщение для запуска:", runMessage);
+            });
 
-            let runResponse;
-            let runSendMessageError = null;
-            try {
-                runResponse = await chrome.runtime.sendMessage(runMessage);
-                console.log("[PopupApp] handleRunScenario: ОТПРАВКА СООБЩЕНИЯ ЗАПУСКА УСПЕШНА, получаем ответ...");
-            } catch (err) {
-                runSendMessageError = err;
-                console.error("[PopupApp] handleRunScenario: ПОЙМАНА ОШИБКА ПРИ ОТПРАВКЕ СООБЩЕНИЯ ЗАПУСКА:", err);
-                console.error("[PopupApp] handleRunScenario: stack trace ошибки отправки запуска:", err?.stack);
-            }
-
-            if (runSendMessageError) {
-                console.error("[PopupApp] handleRunScenario: ошибка отправки сообщения runScenario, обрабатываем.");
-                document.dispatchEvent(new CustomEvent('log', {
-                    detail: { message: `❌ Ошибка связи при запуске сценария: ${runSendMessageError.message}`, level: 'error' }
-                }));
-                this.updateScenarioControlButtons(false);
-                this.isScenarioLaunchInProgress = false;
-                throw runSendMessageError; // Пробрасываем для общего catch
-            }
-
-            console.log("[PopupApp] handleRunScenario: ответ на запуск (сырой):", runResponse);
-
-            if (runResponse && runResponse.status === "started") {
+            if (response && response.status === "started") {
                 console.log("[PopupApp] Сценарий успешно запущен в background, обновляем состояние кнопок.");
                 // 5. Обновляем состояние кнопок
                 this.updateScenarioControlButtons(true);
-                document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Сценарий запущен. ID: ${runResponse.instanceId}`, level: 'success' } }));
-                console.log("[PopupApp] handleRunScenario: кнопки обновлены, лог об успехе отправлен.");
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Сценарий запущен. ID: ${response.instanceId}`, level: 'success' } }));
             } else {
-                const errorMsg = runResponse?.message || 'Неизвестная ошибка при запуске';
+                const errorMsg = response?.message || 'Неизвестная ошибка при запуске';
                 console.error("[PopupApp] Ошибка запуска сценария:", errorMsg);
                 document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка запуска сценария: ${errorMsg}`, level: 'error' } }));
                 // Возвращаем кнопки в исходное состояние в случае ошибки
                 this.updateScenarioControlButtons(false);
-                this.isScenarioLaunchInProgress = false; // Сбросим флаг
             }
 
         } catch (err) {
-            // Этот блок теперь поймает и ошибки send, и другие ошибки
-            console.error("[PopupApp] Исключение в handleRunScenario (общий catch):", err);
-            console.error("[PopupApp] Исключение в handleRunScenario (общий catch), stack:", err?.stack);
-            document.dispatchEvent(new CustomEvent('log', {
-                detail: { message: `❌ Критическая ошибка при запуске сценария: ${err.message}`, level: 'error' }
-            }));
+            console.error("[PopupApp] Исключение при запуске сценария:", err);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи при запуске сценария: ${err.message}`, level: 'error' } }));
             // Возвращаем кнопки в исходное состояние в случае ошибки
             this.updateScenarioControlButtons(false);
-            this.isScenarioLaunchInProgress = false; // Сбросим флаг
+        } finally {
+            // Сбросить флаг в любом случае, после попытки запуска
+            this.isScenarioLaunchInProgress = false; // <-- Сбросить флаг
         }
     }
 
@@ -2512,13 +2375,9 @@ class PopupApp {
             if (response && response.status === "success") {
                 const isRunning = response.isRunning;
                 console.log(`[PopupApp] Статус сценариев при загрузке: isRunning=${isRunning}`);
-
-                // 👇 ВАЖНО: Сбрасываем флаг запуска, так как проверка статуса завершена
-                // Это исправит ситуацию, если флаг завис после закрытия popup
-                this.isScenarioLaunchInProgress = false;
-
                 this.updateScenarioControlButtons(isRunning);
 
+                // Опционально: можно отобразить уведомление, если сценарии выполняются
                 if (isRunning) {
                     const count = response.runningScenarios?.length || 1;
                     document.dispatchEvent(new CustomEvent('log', {
@@ -2530,14 +2389,12 @@ class PopupApp {
                 }
             } else {
                 console.warn("[PopupApp] Не удалось получить статус сценариев при загрузке:", response?.message);
-                // Сбрасываем флаг и кнопки в начальное состояние
-                this.isScenarioLaunchInProgress = false;
+                // В случае ошибки оставляем кнопки в начальном состоянии (не запущено)
                 this.updateScenarioControlButtons(false);
             }
         } catch (err) {
             console.error("[PopupApp] Ошибка при проверке статуса сценариев при загрузке:", err);
-            // Сбрасываем флаг и кнопки в начальное состояние
-            this.isScenarioLaunchInProgress = false;
+            // В случае ошибки оставляем кнопки в начальном состоянии (не запущено)
             this.updateScenarioControlButtons(false);
         }
     }
@@ -2548,13 +2405,12 @@ document.addEventListener('DOMContentLoaded', () => {
     new PopupApp();
 });
 
+
 === END FILE: D:\разработка\youtube-parser-os\popup\popup.js ===
 
 --------------------------------------------------------------------------------
 
 === START FILE: D:\разработка\youtube-parser-os\popup\components\ControlSection.js ===
-
-// popup/components/ControlSection.js
 
 export class ControlSection {
     constructor() {
@@ -2572,52 +2428,67 @@ export class ControlSection {
     }
 
     init() {
-        // Слушаем внутренние события от popup контроллера (если используются)
-        // document.addEventListener('control:enableStart', () => this.enableStart());
-        // document.addEventListener('control:disableStart', () => this.disableStart());
+        // Слушаем внутренние события от popup контроллера
+        document.addEventListener('control:enableStart', () => this.enableStart());
+        document.addEventListener('control:disableStart', () => this.disableStart());
 
         // Привязываем обработчики событий UI
-        // ОСНОВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ:
-        // НЕ добавляем обработчик клика напрямую на this.runScenarioBtn.
-        // Эта кнопка будет обрабатываться через CustomEvent в PopupApp.
 
-        // Если в ControlSection есть bindEvents, убедитесь, что в нем
-        // тоже нет строки вроде:
-        // if (this.runScenarioBtn) {
-        //   this.runScenarioBtn.addEventListener('click', ...);
-        // }
+        this.stopBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('stopAnalysis')); // Это событие уже отправляется
+        });
 
-        // Можно добавить лог для отладки, что сам элемент найден:
-        if (!this.runScenarioBtn) {
-            console.error("[ControlSection] Кнопка 'runScenarioBtn' не найдена в DOM при инициализации!");
-        } else {
-            console.log("[ControlSection] Кнопка 'runScenarioBtn' успешно найдена.");
-        }
+        this.copyTableBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('copyTable'));
+        });
 
-        console.log("[ControlSection] Инициализирован. Элементы:", {
-            runScenarioBtn: this.runScenarioBtn,
-            stopBtn: this.stopBtn,
-            copyTableBtn: this.copyTableBtn,
-            clearTableBtn: this.clearTableBtn,
-            clearLogBtn: this.clearLogBtn,
-            scenarioSelector: this.scenarioSelector
+        this.clearTableBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('clearTable'));
+        });
+
+        this.clearLogBtn.addEventListener('click', () => {
+            document.dispatchEvent(new CustomEvent('clearLog'));
         });
     }
 
-    // Методы enableStart/disableStart могут быть не нужны, если состояние кнопок управляется напрямую из PopupApp
-    // Но оставим их для совместимости или будущего использования
-    // Обновим их, чтобы они работали с правильным ID кнопки
-    enableRunButton() { // <-- Имя метода обновлено для ясности
+    handleStart() {
+        const iterations = parseInt(document.getElementById('iterationsInput').value) || 10;
+        const mode = document.querySelector('input[name="selectionMode"]:checked')?.value || 'smart';
+
+        this.dispatchEvent('startAnalysis', { iterations, mode });
+        this.startBtn.disabled = true;
+        this.stopBtn.disabled = false;
+    }
+
+    handleStop() {
+        this.dispatchEvent('stopAnalysis');
+        this.startBtn.disabled = false;
+        this.stopBtn.disabled = true;
+    }
+
+    handleCopyTable() {
+        this.dispatchEvent('copyTable');
+    }
+
+    handleClearTable() {
+        this.dispatchEvent('clearTable');
+    }
+
+    handleClearLog() {
+        this.dispatchEvent('clearLog');
+    }
+
+    enableStart() {
+        // Логика включена в PopupApp.updateScenarioControlButtons
         if (this.runScenarioBtn) this.runScenarioBtn.disabled = false;
+        if (this.stopBtn) this.stopBtn.disabled = true;
     }
 
-    disableRunButton() { // <-- Имя метода обновлено для ясности
+    disableStart() {
+        // Логика включена в PopupApp.updateScenarioControlButtons
         if (this.runScenarioBtn) this.runScenarioBtn.disabled = true;
+        if (this.stopBtn) this.stopBtn.disabled = false;
     }
-
-    // Остальные методы handle* были перенесены в PopupApp.js
-    // Этот компонент теперь в основном отвечает за хранение ссылок на элементы
-    // и, при необходимости, управление их состоянием напрямую или через методы.
 
     dispatchEvent(type, detail) {
         document.dispatchEvent(new CustomEvent(type, { detail }));
@@ -3085,6 +2956,7 @@ export class TableSection {
 
 === START FILE: D:\разработка\youtube-parser-os\scenarios\parse-recommendation.js ===
 
+
 // scenarios/parse-recommendation.js
 import { scrollPageNTimes } from '../core/utils/scroller.js';
 // import { logger } from '../background/background.js'; // Будет использоваться через context.log
@@ -3143,6 +3015,7 @@ export const parseRecommendationScenario = {
         }
     }
 };
+
 
 === END FILE: D:\разработка\youtube-parser-os\scenarios\parse-recommendation.js ===
 

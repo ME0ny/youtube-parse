@@ -16,6 +16,7 @@ export const parseRecommendationScenario = {
      */
     async execute(context) {
         const { log, params = {}, tabId, abortSignal } = context;
+        console.log("[ParseRecommendation] Начало выполнения, context:", { params, tabId }); // <-- Лог
 
         // Параметры по умолчанию, как указано в задаче
         const scrollParams = {
@@ -29,10 +30,14 @@ export const parseRecommendationScenario = {
 
         try {
             // Проверяем, не было ли запроса на остановку до начала
+            log(`⏳ Проверка abortSignal перед скроллингом...`, { module: 'ParseRecommendation' });
             await abortSignal();
+            log(`✅ Проверка abortSignal пройдена.`, { module: 'ParseRecommendation' });
 
             // --- 1. Скроллинг страницы ---
+            log(`🔄 Вызов scrollPageNTimes...`, { module: 'ParseRecommendation' });
             await scrollPageNTimes(context, scrollParams.count, scrollParams.delayMs, scrollParams.step);
+            log(`✅ scrollPageNTimes завершен.`, { module: 'ParseRecommendation' });
 
             // --- 2. TODO: Парсинг и подсветка (в следующем шаге) ---
             // const parsedCards = await parseAndHighlight(context);
@@ -48,6 +53,8 @@ export const parseRecommendationScenario = {
             log(`🎉 Сценарий "Парсинг рекомендаций" успешно завершён.`, { module: 'ParseRecommendation' });
 
         } catch (error) {
+            console.error("[ParseRecommendation] Поймано исключение:", error); // <-- Лог ошибок
+
             if (error.message === 'Сценарий остановлен пользователем.') {
                 log(`⏹️ Сценарий "Парсинг рекомендаций" остановлен пользователем.`, { module: 'ParseRecommendation', level: 'warn' });
             } else {

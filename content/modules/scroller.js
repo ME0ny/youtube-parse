@@ -1,16 +1,25 @@
-// core/utils/scroller.js
+// content/modules/scroller.js
 
 /**
- * Выполняет один акт скроллинга страницы.
- * @param {Object} options - Опции для скролла.
- * @param {number} [options.step=1000] - На сколько пикселей скроллить за раз.
- * @returns {void}
+ * Выполняет один шаг скроллинга страницы.
+ * @param {number} step - На сколько пикселей скроллить.
+ * @returns {Promise<void>}
  */
-function performSingleScroll({ step = 1000 } = {}) {
-    window.scrollBy(0, step);
-    // Можно добавить логику подсчета карточек здесь, если нужно после каждого скролла,
-    // но в текущей логике это делается один раз в конце серии.
-    // const estimatedCardCount = document.querySelectorAll('ytd-rich-item-renderer, ytd-compact-video-renderer').length;
-    // return { cardCount: estimatedCardCount };
+function performSingleScroll(step = 1000) {
+    return new Promise((resolve) => {
+        // Выполняем скролл
+        window.scrollBy(0, step);
+        // Небольшая задержка, чтобы дать странице немного отреагировать
+        // Это может помочь, если YouTube подгружает контент лениво
+        setTimeout(() => {
+            console.log(`[Content Module Scroller] Выполнен один скролл на ${step}px.`);
+            resolve();
+        }, 50); // Небольшая задержка 50мс
+    });
 }
+
+// Экспортируем функцию в глобальную область видимости
+// Теперь она будет доступна как window.performSingleScroll
 window.performSingleScroll = performSingleScroll;
+
+console.log("[Content Module Scroller] Модуль загружен и готов.");

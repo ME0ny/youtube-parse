@@ -7,37 +7,21 @@ console.log("[Content Script] Загружен и готов к работе.");
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log("[Content Script] Получено сообщение:", request);
 
-    if (request.action === "scrollNTimes") {
-        console.log("[Content Script] Начинаем выполнение скроллинга:", request);
+    if (request.action === "performSingleScroll") {
+        console.log("[Content Script] Начинаем выполнение ОДНОГО скролла:", request);
 
-        (async () => {
-            try {
-                // Используем функцию из глобальной области видимости
-                const result = await window.performScrollNTimes(
-                    request.count,
-                    request.delayMs,
-                    request.step,
-                    async (current, total) => {
-                        try {
-                            await chrome.runtime.sendMessage({
-                                type: "contentLog",
-                                message: `Прогресс скроллинга: ${current}/${total}`,
-                                level: "info",
-                                module: "ContentScroller"
-                            });
-                        } catch (err) {
-                            console.debug("Не удалось отправить промежуточный лог скроллинга:", err);
-                        }
-                    }
-                );
-                console.log("[Content Script] Скроллинг завершён, отправляем результат:", result);
-                sendResponse(result);
-            } catch (err) {
-                console.error("[Content Script] Ошибка скроллинга:", err);
+        // Выполняем скролл, вызывая функцию из глобальной области
+        window.performSingleScroll(request.step)
+            .then(() => {
+                console.log("[Content Script] Один скролл выполнен успешно.");
+                sendResponse({ status: "success" });
+            })
+            .catch((err) => {
+                console.error("[Content Script] Ошибка выполнения одного скролла:", err);
                 sendResponse({ status: "error", message: err.message });
-            }
-        })();
+            });
 
+        // Возвращаем true, чтобы указать, что ответ будет асинхронным
         return true;
     }
 

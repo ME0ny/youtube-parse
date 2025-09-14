@@ -140,12 +140,14 @@ class PopupApp {
                 if (request.status === 'started') {
                     this.updateScenarioControlButtons(true);
                 } else if (request.status === 'stopped' || request.status === 'finished') {
+                    console.log("PopupApp: Updating buttons to STOPPED state based on scenarioStatus"); // <-- Лог
                     this.updateScenarioControlButtons(false);
                 }
                 // Логируем сообщение от сценария, если оно есть
                 if (request.message) {
                     document.dispatchEvent(new CustomEvent('log', { detail: { message: request.message, level: request.level || 'info' } }));
                 }
+                return;
             }
 
             if (request.type === 'dataUpdated') {
@@ -232,7 +234,7 @@ class PopupApp {
                     iterations,
                     mode,
                     // Параметры для скроллинга (можно сделать настройками позже)
-                    count: 5,
+                    count: 16,
                     delayMs: 1500,
                     step: 1000
                 }
@@ -255,10 +257,13 @@ class PopupApp {
             console.error("[PopupApp] Исключение при запуске сценария:", err);
             document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи при запуске сценария: ${err.message}`, level: 'error' } }));
             // Возвращаем кнопки в исходное состояние в случае ошибки
+            this.isScenarioLaunchInProgress = false;
             this.updateScenarioControlButtons(false);
         } finally {
             // Сбросить флаг в любом случае, после попытки запуска
+            console.log("[PopupApp] Finally блок handleRunScenario: сброс флага isScenarioLaunchInProgress.");
             this.isScenarioLaunchInProgress = false; // <-- Сбросить флаг
+            this.updateScenarioControlButtons(false);
         }
     }
 
