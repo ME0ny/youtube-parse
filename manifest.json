@@ -23,6 +23,7 @@
             ],
             "js": [
                 "content/modules/scroller.js",
+                "content/modules/parser.js",
                 "content/content.js"
             ],
             "run_at": "document_idle"

@@ -1,6 +1,7 @@
 
 // scenarios/parse-recommendation.js
 import { scrollPageNTimes } from '../core/utils/scroller.js';
+import { parseAndHighlight, removeParserHighlights } from '../core/utils/parser.js';
 // import { logger } from '../background/background.js'; // Будет использоваться через context.log
 
 /**
@@ -39,9 +40,17 @@ export const parseRecommendationScenario = {
             await scrollPageNTimes(context, scrollParams.count, scrollParams.delayMs, scrollParams.step);
             log(`✅ scrollPageNTimes завершен.`, { module: 'ParseRecommendation' });
 
-            // --- 2. TODO: Парсинг и подсветка (в следующем шаге) ---
-            // const parsedCards = await parseAndHighlight(context);
-            // log(`✅ Найдено и подсвечено ${parsedCards.length} видео.`, { module: 'ParseRecommendation' });
+            // --- 2. Парсинг и подсветка ---
+            await removeParserHighlights(context);
+
+            const parseResult = await parseAndHighlight(context);
+            const highlightedCount = parseResult.highlightedCount;
+            const cardHtmlList = parseResult.cardHtmlList; // Получаем список HTML
+
+            log(`✅ Найдено и подсвечено ${highlightedCount} видео.`, { module: 'ParseRecommendation' });
+
+            // Для отладки: логируем количество полученных HTML
+            log(`📄 Получено HTML-кодов карточек: ${cardHtmlList?.length || 0}`, { module: 'ParseRecommendation' });
 
             // --- 3. TODO: Скрапинг данных (в следующем шаге) ---
             // const scrapedData = await scrapeCards(context, parsedCards);
