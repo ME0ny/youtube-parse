@@ -25,38 +25,55 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // --- Обработчики для парсинга и скрапинга ---
     if (request.action === "parseAndHighlight") {
-        console.log("[Content Script] === Получен запрос на парсинг и подсветку ===");
+        console.log("[Content Script] === Получен запрос на парсинг, подсветку и скрапинг ===");
+        const { sourceVideoId = 'unknown' } = request; // Ожидаем sourceVideoId от background
+        console.log("[Content Script] Используем sourceVideoId:", sourceVideoId);
+
         try {
-            // Выполняем парсинг и подсветку, вызывая функцию из глобальной области
-            const parsedCardsElements = window.ytParser.parseAndHighlight(); // Это HTMLElement[]
-            const count = parsedCardsElements.length;
-            console.log(`[Content Script] === Парсинг и подсветка завершены. Найдено карточек: ${count} ===`);
+            // 1. Найти и подсветить карточки
+            const parsedCardElements = window.ytParser.parseAndHighlight(); // Это HTMLElement[]
+            const count = parsedCardElements.length;
+            console.log(`[Content Script] Найдено и подсвечено карточек: ${count}`);
 
-            // НОВОЕ: Собираем outerHTML каждой карточки
-            const cardHtmlList = [];
-            parsedCardsElements.forEach((element, index) => {
-                try {
-                    // outerHTML включает сам элемент и все его дочерние
-                    cardHtmlList.push(element.outerHTML);
-                } catch (serializeErr) {
-                    console.error(`[Content Script] Ошибка сериализации HTML для карточки ${index}:`, serializeErr);
-                    // Добавляем заглушку, чтобы не терять порядок
-                    cardHtmlList.push(`<!-- Ошибка сериализации для карточки ${index} -->`);
-                }
-            });
+            // 2. Извлечь данные из подсвеченных карточек
+            // Передаем массив элементов и sourceVideoId в scraper
+            const scrapedData = window.ytScraper.scrapeCards(parsedCardElements, sourceVideoId);
+            console.log(`[Content Script] Извлечено данных из ${scrapedData.length} карточек.`);
 
-            // Возвращаем и количество, и список HTML
+            // 3. Вернуть данные
             sendResponse({
                 status: "success",
                 highlightedCount: count,
-                cardHtmlList: cardHtmlList // НОВОЕ поле
+                scrapedData: scrapedData // Возвращаем сразу извлеченные данные
             });
+            console.log("[Content Script] === Данные успешно отправлены ===");
+
         } catch (err) {
-            console.error("[Content Script] Ошибка парсинга/подсветки:", err);
-            sendResponse({ status: "error", message: err.message });
+            console.error("[Content Script] Ошибка парсинга/скрапинга:", err);
+            sendResponse({
+                status: "error",
+                message: err.message,
+                // Даже при ошибке можем вернуть то, что успели найти
+                highlightedCount: 0,
+                scrapedData: []
+            });
         }
         return true; // keep channel open for async response
+    }
+
+    // --- Обработчики для управления подсветкой ---
+    if (request.action === "removeParserHighlights") {
+        console.log("[Content Script] Получен запрос на удаление подсветки.");
+        try {
+            window.ytParser.removeHighlights();
+            sendResponse({ status: "success" });
+        } catch (err) {
+            console.error("[Content Script] Ошибка удаления подсветки:", err);
+            sendResponse({ status: "error", message: err.message });
+        }
+        return true;
     }
 
     if (request.action === "requestCardDetails") {

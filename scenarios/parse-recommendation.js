@@ -45,12 +45,12 @@ export const parseRecommendationScenario = {
 
             const parseResult = await parseAndHighlight(context);
             const highlightedCount = parseResult.highlightedCount;
-            const cardHtmlList = parseResult.cardHtmlList; // Получаем список HTML
+            const scrapedData = parseResult.scrapedData;
 
             log(`✅ Найдено и подсвечено ${highlightedCount} видео.`, { module: 'ParseRecommendation' });
 
             // Для отладки: логируем количество полученных HTML
-            log(`📄 Получено HTML-кодов карточек: ${cardHtmlList?.length || 0}`, { module: 'ParseRecommendation' });
+            log(`📄 Получено HTML-кодов карточек: ${scrapedData?.length || 0}`, { module: 'ParseRecommendation' });
 
             // --- 3. TODO: Скрапинг данных (в следующем шаге) ---
             // const scrapedData = await scrapeCards(context, parsedCards);
