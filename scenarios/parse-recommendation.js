@@ -3,7 +3,8 @@
 import { scrollPageNTimes } from '../core/utils/scroller.js';
 import { parseAndHighlight, removeParserHighlights } from '../core/utils/parser.js';
 import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
-// import { logger } from '../background/background.js'; // Будет использоваться через context.log
+import { logger } from '../background/background.js'; // Убедись, что logger доступен
+import { tableAdapter } from '../background/background.js'; // 👈 НОВОЕ: Импорт tableAdapter
 
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
@@ -66,9 +67,46 @@ export const parseRecommendationScenario = {
             } else {
                 log(`ℹ️ Нет новых данных для обновления индексов.`, { module: 'ParseRecommendation' });
             }
-            // --- 4. TODO: Сохранение данных (в следующем шаге) ---
-            // await saveData(context, scrapedData);
+            // --- 4. Загрузить данные в таблицу
+            if (scrapedData.length > 0) {
+                log(`💾 Сохранение ${scrapedData.length} записей в таблицу...`, { module: 'ParseRecommendation' });
+                try {
+                    // Добавляем временной штамп, если его нет
+                    const dataToSave = scrapedData.map(item => ({
+                        ...item,
+                        timestamp: item.timestamp || Date.now() // Добавляем timestamp, если отсутствует
+                    }));
 
+                    // Используем tableAdapter для сохранения данных
+                    // Предполагается, что tableAdapter.addBatch существует
+                    if (typeof tableAdapter.addBatch === 'function') {
+                        await tableAdapter.addBatch(dataToSave);
+                        log(`✅ ${dataToSave.length} записей успешно сохранены в таблицу.`, { module: 'ParseRecommendation' });
+                    } else if (typeof tableAdapter.add === 'function') {
+                        // Если addBatch нет, добавляем по одной (менее эффективно)
+                        log(`⚠️ tableAdapter.addBatch не найден, сохраняем по одной записи...`, { module: 'ParseRecommendation', level: 'warn' });
+                        let savedCount = 0;
+                        for (const item of dataToSave) {
+                            try {
+                                await tableAdapter.add(item);
+                                savedCount++;
+                            } catch (addItemErr) {
+                                log(`❌ Ошибка сохранения одной записи: ${addItemErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                                // Не прерываем весь процесс из-за одной ошибки
+                            }
+                        }
+                        log(`✅ ${savedCount}/${dataToSave.length} записей успешно сохранены в таблицу (по одной).`, { module: 'ParseRecommendation' });
+                    } else {
+                        throw new Error("Адаптер таблицы не поддерживает методы добавления (add/addBatch)");
+                    }
+
+                } catch (saveErr) {
+                    log(`❌ Ошибка сохранения данных в таблицу: ${saveErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    // Не прерываем сценарий из-за ошибки сохранения, это вторично
+                }
+            } else {
+                log(`ℹ️ Нет новых данных для сохранения в таблицу.`, { module: 'ParseRecommendation' });
+            }
             log(`🎉 Сценарий "Парсинг рекомендаций" успешно завершён.`, { module: 'ParseRecommendation' });
 
         } catch (error) {

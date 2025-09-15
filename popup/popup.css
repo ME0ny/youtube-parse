@@ -1,4 +1,6 @@
-/* popup/popup.css */
+/* === popup/popup.css === */
+
+/* --- 1. Переменные темы --- */
 :root {
     --primary: #4338ca;
     --primary-hover: #3730a3;
@@ -19,6 +21,7 @@
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+/* --- 2. Базовые стили --- */
 * {
     box-sizing: border-box;
     margin: 0;
@@ -30,17 +33,35 @@ body {
     background-color: var(--bg);
     color: var(--text);
     padding: 16px;
+    /* Фиксируем размер области видимости popup */
     width: 800px;
     height: 720px;
-    overflow: hidden;
+    /* Разрешаем скролл внутри body, если содержимое больше */
+    overflow: auto;
+    /* Убираем скрытие полос прокрутки, если они появятся */
+    /* overflow: hidden; УДАЛИТЬ */
 }
 
+/* --- 3. Макет приложения --- */
 .app-container {
     display: flex;
     flex-direction: column;
     gap: 16px;
-    height: 100%;
-    overflow: hidden;
+    /* Указываем желаемую высоту содержимого */
+    /* height: 100%; УДАЛИТЬ или изменить */
+    height: calc(720px - 32px);
+    /* 720px (body height) - 32px (padding body 16*2) = 688px */
+    /* ИЛИ, если хочешь конкретно 800px для содержимого: */
+    /* height: 800px; */
+    /* Установит высоту контента в 800px, независимо от body */
+    /* Если height будет больше, чем высота body (720px - 32px = 688px), появится скролл у body */
+
+    /* Предотвращаем рост больше заданной высоты, если содержимое меньше */
+    /* min-height: 100%; НЕ НУЖНО, если height фиксирован */
+    /* Разрешаем скролл внутри app-container, если его содержимое (секции) больше его высоты */
+    /* overflow: hidden; УДАЛИТЬ */
+    overflow: visible;
+    /* Или auto, если хочешь скролл внутри app-container при необходимости */
 }
 
 .app-title {
@@ -51,6 +72,7 @@ body {
     text-align: center;
 }
 
+/* --- 4. Секции (Sections) --- */
 .section {
     background: var(--card);
     border: 1px solid var(--border);
@@ -58,6 +80,10 @@ body {
     padding: 16px;
     box-shadow: var(--shadow);
     flex-shrink: 0;
+    /* 👇 ВАЖНО: Возвращаем overflow: hidden для .section */
+    overflow: hidden;
+    /* Это заставит flex-потомков (#logSection.content, #tableSection.content) 
+       управлять своим переполнением, если они используют flex и maxHeight/minHeight */
 }
 
 .section-header {
@@ -77,37 +103,7 @@ body {
     color: var(--text);
 }
 
-#logSection {
-    /* Позволяем секции журнала расти и сжиматься */
-    flex: 1;
-    /* Минимальная и максимальная высота для контроля */
-    min-height: 150px;
-    /* Минимальная высота, чтобы был виден хотя бы один лог */
-    /* max-height: 300px; */
-    /* Опционально: ограничить максимальную высоту */
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    /* Скрываем переполняющий контент самой секции */
-}
-
-
-
-.toggle-btn {
-    background: none;
-    border: none;
-    font-size: 16px;
-    cursor: pointer;
-    color: var(--secondary);
-    padding: 4px 8px;
-    border-radius: 6px;
-}
-
-.toggle-btn:hover {
-    background: var(--border);
-}
-
-/* Стиль для свернутого блока настроек */
+/* --- 5. Секция настроек --- */
 .settings-section.collapsed #settingsContent {
     display: none;
 }
@@ -163,6 +159,21 @@ body {
     margin-bottom: 12px;
 }
 
+.toggle-btn {
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    color: var(--secondary);
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+.toggle-btn:hover {
+    background: var(--border);
+}
+
+/* --- 6. Группы кнопок --- */
 .button-group {
     display: flex;
     flex-wrap: wrap;
@@ -193,6 +204,7 @@ body {
     box-shadow: none;
 }
 
+/* --- 7. Цвета кнопок --- */
 .btn-primary {
     background: var(--primary);
     color: white;
@@ -247,7 +259,17 @@ body {
     background: var(--secondary-hover);
 }
 
-/* Журнал */
+/* --- 8. Секция журнала --- */
+#logSection {
+    flex: 2;
+    min-height: 250px;
+    /* Уже установлено */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* Остается на .section */
+}
+
 .log-container {
     padding: 12px;
     flex: 1;
@@ -271,6 +293,7 @@ body {
     border-bottom: none;
 }
 
+/* Цвета уровней логов */
 .log-level-info {
     color: var(--text);
 }
@@ -297,22 +320,22 @@ body {
     padding: 20px 0;
 }
 
+/* --- 9. Секция таблицы --- */
 #tableSection {
-    /* Позволяем секции таблицы тоже расти и сжиматься, но с меньшим приоритетом */
-    flex: 2;
-    /* Минимальная высота */
-    min-height: 150px;
+    flex: 3;
+    min-height: 250px;
+    /* Уже установлено */
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    /* Скрываем переполняющий контент самой секции */
+    /* Остается на .section */
 }
 
 #tableSection .section-header {
     margin-bottom: 8px;
 }
 
-/* Таблица */
+/* --- 10. Таблица данных --- */
 .table-container {
     flex: 1;
     overflow: auto;
@@ -362,7 +385,7 @@ body {
     border-radius: 4px;
 }
 
-/* Скроллбары */
+/* --- 11. Скроллбары --- */
 .log-container::-webkit-scrollbar,
 .table-container::-webkit-scrollbar {
     width: 6px;
