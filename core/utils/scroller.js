@@ -10,21 +10,34 @@
  */
 export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step = 1000) {
     const { log, abortSignal } = context;
+    let tabId = context.tabId;
     console.log("[Scroller] scrollPageNTimes вызвана с параметрами:", { count, delayMs, step, tabId: context.tabId }); // <-- Лог
     log(`🔄 Начинаем скроллинг страницы: ${count} раз(а), шаг ${step}px, задержка ${delayMs}мс`, { module: 'Scroller' });
 
     try {
-        // --- ПРОВЕРКА tabId ---
-        if (typeof context.tabId !== 'number' || context.tabId < 0) {
-            const errorMsg = `Недействительный tabId для sendMessage: ${context.tabId}. Убедитесь, что сценарий запущен на активной вкладке YouTube.`;
-            console.error("[Scroller] Ошибка проверки tabId:", errorMsg); // <-- Лог ошибки
+
+        // --- УЛУЧШЕННАЯ ПРОВЕРКА tabId ---
+        // 1. Сначала проверяем, передан ли tabId в context
+        let effectiveTabId = tabId;
+
+        // 2. Если tabId все еще null/undefined, логируем предупреждение
+        // (Это может произойти, если background.js не смог его получить)
+        if (effectiveTabId == null) { // == проверит и null, и undefined
+            const errorMsg = `Недействительный tabId для sendMessage: ${effectiveTabId}. Убедитесь, что сценарий запущен на активной вкладке YouTube.`;
+            log(`❌ ${errorMsg}`, { module: 'Scroller', level: 'error' });
+            throw new Error(errorMsg); // Прерываем выполнение скроллинга
+        }
+
+        // 3. Проверка типа (дополнительная предосторожность)
+        if (typeof effectiveTabId !== 'number' || effectiveTabId < 0) {
+            const errorMsg = `Недействительный тип или значение tabId для sendMessage: ${effectiveTabId} (тип: ${typeof effectiveTabId}). Ожидалось положительное число.`;
             log(`❌ ${errorMsg}`, { module: 'Scroller', level: 'error' });
             throw new Error(errorMsg);
         }
-        console.log("[Scroller] Проверка tabId пройдена."); // <-- Лог
-        // --- КОНЕЦ ПРОВЕРКИ tabId ---
-
+        // --- КОНЕЦ УЛУЧШЕННОЙ ПРОВЕРКИ tabId ---
+        console.log("Проверка tabId пройдена", effectiveTabId);
         for (let i = 1; i <= count; i++) {
+            console.log("// 1. Проверяем, не был ли запрос на остановку/прерывание");
             // 1. Проверяем, не был ли запрос на остановку/прерывание
             await abortSignal();
 

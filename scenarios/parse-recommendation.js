@@ -2,6 +2,7 @@
 // scenarios/parse-recommendation.js
 import { scrollPageNTimes } from '../core/utils/scroller.js';
 import { parseAndHighlight, removeParserHighlights } from '../core/utils/parser.js';
+import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
 // import { logger } from '../background/background.js'; // Будет использоваться через context.log
 
 /**
@@ -45,17 +46,26 @@ export const parseRecommendationScenario = {
 
             const parseResult = await parseAndHighlight(context);
             const highlightedCount = parseResult.highlightedCount;
-            const scrapedData = parseResult.scrapedData;
+            const scrapedData = parseResult.scrapedData || [];
 
             log(`✅ Найдено и подсвечено ${highlightedCount} видео.`, { module: 'ParseRecommendation' });
 
             // Для отладки: логируем количество полученных HTML
             log(`📄 Получено HTML-кодов карточек: ${scrapedData?.length || 0}`, { module: 'ParseRecommendation' });
 
-            // --- 3. TODO: Скрапинг данных (в следующем шаге) ---
-            // const scrapedData = await scrapeCards(context, parsedCards);
-            // log(`💾 Скрапинг завершён. Получено данных по ${scrapedData.length} видео.`, { module: 'ParseRecommendation' });
-
+            if (scrapedData.length > 0) {
+                log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });
+                try {
+                    // Передаем извлеченные данные в IndexManager
+                    updateIndexManager(scrapedData);
+                    log(`✅ Индексы IndexManager успешно обновлены.`, { module: 'ParseRecommendation' });
+                } catch (indexUpdateErr) {
+                    log(`❌ Ошибка обновления индексов IndexManager: ${indexUpdateErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    // Не прерываем сценарий из-за ошибки обновления индексов, это вторично
+                }
+            } else {
+                log(`ℹ️ Нет новых данных для обновления индексов.`, { module: 'ParseRecommendation' });
+            }
             // --- 4. TODO: Сохранение данных (в следующем шаге) ---
             // await saveData(context, scrapedData);
 

@@ -7,6 +7,12 @@ import { ScenarioEngine } from '../core/scenario-engine.js';
 import { testCountdownScenario } from '../scenarios/test-countdown.js';
 import { prepareImportedDataIndices } from '../core/data-processor.js';
 import { parseRecommendationScenario } from '../scenarios/parse-recommendation.js';
+import {
+    initialize as initIndexManager,
+    reset as resetIndexManager,
+    getStateSnapshot,
+    addScrapedData as updateIndexManagerWithData
+} from '../core/index-manager.js';
 
 // --- Инициализация нового функционала ---
 // 1. Создаем экземпляр логгера
@@ -45,6 +51,33 @@ export const scenarioEngine = new ScenarioEngine();
 // 3. Регистрируем тестовый сценарий
 scenarioEngine.registerScenario(testCountdownScenario);
 scenarioEngine.registerScenario(parseRecommendationScenario);
+
+// --- Инициализация IndexManager ---
+// Вызывается один раз при запуске background script
+async function initializeBackgroundState() {
+    logger.info("🚀 Background service worker запущен и готов к работе.", { module: 'Background' });
+
+    try {
+        // 1. Инициализируем IndexManager данными из tableAdapter
+        logger.info("🔄 Инициализация IndexManager...", { module: 'Background' });
+        const allStoredData = await tableAdapter.getAll();
+        await initIndexManager(allStoredData);
+        logger.info(`✅ IndexManager инициализирован. Загружено ${allStoredData.length} записей.`, { module: 'Background' });
+
+        // 2. Можно инициализировать другие части системы...
+
+    } catch (initErr) {
+        logger.error(`❌ Ошибка инициализации background: ${initErr.message}`, { module: 'Background' });
+        // Важно: не останавливаем весь background из-за ошибки инициализации
+        // но логируем критично
+    }
+}
+
+// Вызываем инициализацию
+initializeBackgroundState().catch(err => {
+    console.error("[Background] Критическая ошибка при инициализации:", err);
+    // logger может быть еще не инициализирован, поэтому console.error тоже важен
+});
 // --- Конец инициализации нового функционала ---
 
 // --- Обработка сообщений от popup ---
@@ -138,11 +171,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         (async () => {
             try {
                 let activeTabId = null;
+                logger.debug("Попытка получить активную вкладку...", { module: 'Background' });
+
                 try {
-                    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-                    activeTabId = activeTab?.id || null;
-                } catch (e) {
-                    logger.warn("Не удалось получить активную вкладку для сценария", { module: 'Background' });
+                    // Попытка 1: Получить активную вкладку в текущем окне
+                    const activeTabsCurrentWindow = await chrome.tabs.query({ active: true, currentWindow: true });
+                    logger.debug(`Результат query({active: true, currentWindow: true}):`, activeTabsCurrentWindow, { module: 'Background' });
+                    if (activeTabsCurrentWindow.length > 0) {
+                        activeTabId = activeTabsCurrentWindow[0].id;
+                        logger.debug(`Найдена активная вкладка в текущем окне: ID=${activeTabId}`, { module: 'Background' });
+                    } else {
+                        logger.warn("Активная вкладка в текущем окне не найдена.", { module: 'Background' });
+                    }
+                } catch (queryErr1) {
+                    logger.warn(`Ошибка при попытке 1 получения активной вкладки: ${queryErr1.message}`, { module: 'Background' });
+                }
+
+                // Если не нашли, попробуем более общий запрос
+                if (activeTabId === null) {
+                    logger.debug("Попытка 2: Получить любую активную вкладку...", { module: 'Background' });
+                    try {
+                        const activeTabsAnyWindow = await chrome.tabs.query({ active: true });
+                        logger.debug(`Результат query({active: true}):`, activeTabsAnyWindow, { module: 'Background' });
+                        if (activeTabsAnyWindow.length > 0) {
+                            // Берем первую, обычно это та, что в текущем окне
+                            activeTabId = activeTabsAnyWindow[0].id;
+                            logger.debug(`Найдена активная вкладка (любая): ID=${activeTabId}`, { module: 'Background' });
+                        } else {
+                            logger.warn("Не найдено ни одной активной вкладки.", { module: 'Background' });
+                        }
+                    } catch (queryErr2) {
+                        logger.warn(`Ошибка при попытке 2 получения активной вкладки: ${queryErr2.message}`, { module: 'Background' });
+                    }
+                }
+
+                // Если все еще null, логируем предупреждение, но продолжаем (сценарий может сам решить, что делать)
+                if (activeTabId === null) {
+                    logger.warn("❌ Не удалось получить активную вкладку. tabId будет null. Сценарий может не работать с контентом страницы.", { module: 'Background' });
+                    // Не бросаем ошибку здесь, пусть сценарий сам решает, критично ли это.
+                    // Но для скроллинга это критично, поэтому сценарий должен это обработать.
+                } else {
+                    logger.info(`✅ Активная вкладка определена: ID=${activeTabId}`, { module: 'Background' });
                 }
 
                 // Определяем, какой сценарий запускать
@@ -157,15 +226,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     throw new Error(`Неизвестный ID сценария: ${scenarioId}`);
                 }
 
-                // Передаем параметры в сценарий через context.params
+                // Передаем параметры и tabId в сценарий через context.params и context.tabId
                 const instanceId = await scenarioEngine.run(scenarioToRun, params, activeTabId);
                 logger.info(`🏁 Сценарий "${scenarioId}" запущен с ID: ${instanceId}`, { module: 'Background' });
 
-                // 👇 Отправляем подтверждение запуска с ID инстанса
                 sendResponse({ status: "started", instanceId: instanceId });
-
-                // Опционально: отправляем сообщение в popup о начале (если нужно немедленное уведомление до завершения сценария)
-                // chrome.runtime.sendMessage({ type: "scenarioStatus", status: "started", message: `Сценарий "${scenarioId}" начат.`, level: "info" });
 
             } catch (err) {
                 logger.error(`❌ Ошибка запуска сценария "${scenarioId}": ${err.message}`, { module: 'Background' });
@@ -246,51 +311,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             try {
                 if (!request.data || !Array.isArray(request.data)) {
                     const errorMsg = "Некорректные данные для импорта";
-                    console.error("[Background] importTableData:", errorMsg);
+                    logger.warn(`[Background] ${errorMsg}`, { module: 'Background' });
                     sendResponse({ status: "error", message: errorMsg });
                     return;
                 }
 
                 const dataToImport = request.data;
+                logger.info(`📥 Начинаем импорт ${dataToImport.length} записей...`, { module: 'Background' });
 
-                // 1. Получаем существующие данные
-                let existingData = [];
-                try {
-                    existingData = await tableAdapter.getAll();
-                } catch (getErr) {
-                    console.warn("[Background] Не удалось получить существующие данные, начинаем с пустого массива:", getErr.message);
-                }
-
-                // 2. Объединяем данные (можно просто добавить, или реализовать объединение/замещение)
-                // Для простоты, просто добавляем в конец.
-                const combinedData = [...existingData, ...dataToImport];
-
-                // 3. Сохраняем в хранилище через адаптер
-                // tableAdapter.addBatch ожидает массив VideoData. Убедимся, что формат правильный.
-                // addBatch внутри адаптера тоже вызывает getAll, добавляет и set.
-                // Чтобы упростить и избежать двойного getAll, можно напрямую использовать set,
-                // но лучше использовать API адаптера. Реализуем addBatch, если его нет.
-                // Проверим, есть ли addBatch:
+                // 1. Добавляем данные в tableAdapter (основное хранилище)
+                // Предполагается, что tableAdapter.addBatch существует и работает
                 if (typeof tableAdapter.addBatch === 'function') {
                     await tableAdapter.addBatch(dataToImport);
                 } else if (typeof tableAdapter.add === 'function') {
                     // Если addBatch нет, добавляем по одной (менее эффективно)
+                    logger.warn("[Background] tableAdapter.addBatch не найден, используем add для каждой записи...", { module: 'Background' });
                     for (const item of dataToImport) {
                         await tableAdapter.add(item);
                     }
                 } else {
-                    const errorMsg = "Адаптер таблицы не поддерживает методы добавления";
-                    console.error("[Background] importTableData:", errorMsg);
-                    sendResponse({ status: "error", message: errorMsg });
-                    return;
+                    throw new Error("Адаптер таблицы не поддерживает методы добавления (add/addBatch)");
                 }
 
-                logger.info(`📥 Импортировано ${dataToImport.length} записей в таблицу`, { module: 'Background' });
+                logger.info(`✅ Импортировано ${dataToImport.length} записей в tableAdapter`, { module: 'Background' });
+
+                // 👇 НОВОЕ: Обновляем IndexManager импортированными данными
+                try {
+                    logger.info(`🔄 Обновление IndexManager ${dataToImport.length} импортированными записями...`, { module: 'Background' });
+                    updateIndexManagerWithData(dataToImport); // Вызываем функцию из IndexManager
+                    logger.info(`✅ IndexManager успешно обновлен импортированными данными.`, { module: 'Background' });
+                } catch (indexUpdateErr) {
+                    // Логируем ошибку, но не прерываем основной процесс импорта
+                    logger.error(`⚠️ Ошибка обновления IndexManager после импорта: ${indexUpdateErr.message}`, { module: 'Background' });
+                }
 
                 sendResponse({ status: "success", count: dataToImport.length });
 
+                // 👇 НОВОЕ: Оповещаем popup о том, что данные обновились (если нужно)
+                // Это может быть полезно, если popup хочет обновить таблицу или индексы
+                // chrome.runtime.sendMessage({ type: "dataUpdated" }).catch(err => { /* ignore */ });
+
             } catch (err) {
-                console.error("[Background] Ошибка при импорте данных:", err);
                 logger.error(`❌ Ошибка импорта данных: ${err.message}`, { module: 'Background' });
                 sendResponse({ status: "error", message: err.message });
             }
@@ -370,6 +431,67 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         })();
         return true;
+    }
+
+    // 👇 НОВОЕ: Обработчик для сброса индексов
+    if (request.action === "resetIndices") {
+        (async () => {
+            try {
+                logger.info("📥 Получена команда на сброс индексов.", { module: 'Background' });
+                resetIndexManager();
+                logger.info("✅ Индексы успешно сброшены.", { module: 'Background' });
+                sendResponse({ status: "success", message: "Индексы сброшены." });
+            } catch (err) {
+                logger.error(`❌ Ошибка сброса индексов: ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
+    // 👇 НОВОЕ: Обработчик для получения состояния индексов (для отладки/статистики в popup)
+    if (request.action === "getIndexState") {
+        (async () => {
+            try {
+                // logger.info("📥 Получен запрос состояния индексов.", { module: 'Background' });
+                // getStateSnapshot возвращает копии, безопасно для сериализации
+                const indexStateSnapshot = getStateSnapshot();
+
+                // Maps и Sets нужно преобразовать для отправки через sendMessage
+                // ВАЖНО: Создаем объект с полями, которые ожидает popup
+                const serializableState = {
+                    // Поля для scrapedDataBuffer
+                    scrapedDataBuffer_count: indexStateSnapshot.scrapedDataBuffer.length,
+                    // 👇 НОВОЕ: Отправляем сами данные буфера (или часть)
+                    scrapedDataBuffer_sample: indexStateSnapshot.scrapedDataBuffer, // Отправляем первые 5 элементов
+
+                    // Поля для visitedVideoIds
+                    visitedVideoIds_count: indexStateSnapshot.visitedVideoIds.size,
+                    // 👇 НОВОЕ: Отправляем сами ID (или часть)
+                    visitedVideoIds_sample: Array.from(indexStateSnapshot.visitedVideoIds), // Отправляем первые 10 ID
+
+                    // Поля для channelVideoCounts
+                    channelVideoCounts_count: indexStateSnapshot.channelVideoCounts.size,
+                    // 👇 НОВОЕ: Отправляем часть словаря
+                    channelVideoCounts_sample: Object.fromEntries(
+                        Array.from(indexStateSnapshot.channelVideoCounts) // Первые 10 каналов
+                    ),
+
+                    // Поля для channelToVideoIds
+                    channelToVideoIds_count: indexStateSnapshot.channelToVideoIds.size,
+                    // 👇 НОВОЕ: Отправляем часть словаря, преобразуя Set в Array
+                    channelToVideoIds_sample: Object.fromEntries(
+                        Array.from(indexStateSnapshot.channelToVideoIds, ([k, v]) => [k, Array.from(v)])
+                    ),
+                };
+
+                sendResponse({ status: "success", serializableState });
+            } catch (err) {
+                logger.error(`❌ Ошибка получения состояния индексов: ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
     }
 
     // TODO: Здесь будут обработчики для других действий (parseOnce, startAutoAnalysis и т.д.)
