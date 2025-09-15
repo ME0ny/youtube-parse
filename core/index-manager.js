@@ -82,18 +82,22 @@ export function reset() {
  * Добавляет новые данные в индексы и буфер.
  * @param {Array<Object>} newScrapedData - Массив новых объектов данных видео.
  */
-export function addScrapedData(newScrapedData) {
+export function addScrapedData(newScrapedData, addToBuffer = true) {
     if (!Array.isArray(newScrapedData) || newScrapedData.length === 0) {
         console.warn("[IndexManager] addScrapedData: Получен пустой или некорректный массив данных.");
         return;
     }
+    console.log(`[IndexManager] Добавление ${newScrapedData.length} новых записей в индексы. addToBuffer: ${addToBuffer}`, { module: 'IndexManager' });
 
-    console.log(`[IndexManager] Добавление ${newScrapedData.length} новых записей в индексы и буфер.`);
+    // 1. Добавляем в буфер, если addToBuffer === true
+    if (addToBuffer) {
+        scrapedDataBuffer.push(...newScrapedData);
+        console.log(`[IndexManager] Добавлено ${newScrapedData.length} записей в scrapedDataBuffer. Новый размер буфера: ${scrapedDataBuffer.length}`, { module: 'IndexManager' });
+    } else {
+        console.log(`[IndexManager] Пропущено добавление в scrapedDataBuffer (addToBuffer=false).`, { module: 'IndexManager' });
+    }
 
-    // 1. Добавляем в буфер
-    scrapedDataBuffer.push(...newScrapedData);
-
-    // 2. Обновляем индексы
+    // 2. Обновляем индексы (это всегда нужно делать)
     for (const video of newScrapedData) {
         // visitedVideoIds обновляется, если sourceVideoId является "посещенным"
         // Но в данном случае sourceVideoId - это видео, С КОТОРОГО мы пришли.
@@ -105,26 +109,32 @@ export function addScrapedData(newScrapedData) {
         // Для MVP: visitedVideoIds отслеживает sourceVideoId (откуда пришли).
         if (video.sourceVideoId) {
             visitedVideoIds.add(video.sourceVideoId);
+            // console.log(`[IndexManager] Добавлен sourceVideoId в visitedVideoIds: ${video.sourceVideoId}`, { module: 'IndexManager' });
         }
 
-        // channelVideoCounts и channelToVideoIds обновляются для найденных видео
+        // channelVideoCounts обновляется
         const channel = video.channelName || 'Неизвестный канал';
         const currentCount = channelVideoCounts.get(channel) || 0;
         channelVideoCounts.set(channel, currentCount + 1);
+        // console.log(`[IndexManager] Обновлен channelVideoCounts для канала ${channel}: ${currentCount} -> ${currentCount + 1}`, { module: 'IndexManager' });
 
+        // channelToVideoIds обновляется
         if (!channelToVideoIds.has(channel)) {
             channelToVideoIds.set(channel, new Set());
         }
         if (video.videoId) {
             channelToVideoIds.get(channel).add(video.videoId);
+            // console.log(`[IndexManager] Добавлен videoId в channelToVideoIds для канала ${channel}: ${video.videoId}`, { module: 'IndexManager' });
         }
     }
 
-    console.log(`[IndexManager] Индексы обновлены. Новый размер буфера: ${scrapedDataBuffer.length}`);
-    console.log(`[IndexManager] visitedVideoIds.size: ${visitedVideoIds.size}`);
-    console.log(`[IndexManager] channelVideoCounts.size: ${channelVideoCounts.size}`);
-    console.log(`[IndexManager] channelToVideoIds.size: ${channelToVideoIds.size}`);
+    console.log(`[IndexManager] Индексы обновлены.`, { module: 'IndexManager' });
+    console.log(`[IndexManager] visitedVideoIds.size: ${visitedVideoIds.size}`, { module: 'IndexManager' });
+    console.log(`[IndexManager] channelVideoCounts.size: ${channelVideoCounts.size}`, { module: 'IndexManager' });
+    console.log(`[IndexManager] channelToVideoIds.size: ${channelToVideoIds.size}`, { module: 'IndexManager' });
 
+    // 3. Оповещаем подписчиков об обновлении индексов/буфера
+    // broadcastDataUpdate(); // Убираем, так как это делает tableAdapter
 }
 
 /**

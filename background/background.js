@@ -337,11 +337,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
                 logger.info(`✅ Импортировано ${dataToImport.length} записей в tableAdapter`, { module: 'Background' });
 
-                // 👇 НОВОЕ: Обновляем IndexManager импортированными данными
+                // 👇 НОВОЕ: Обновляем IndexManager импортированными данными БЕЗ добавления в scrapedDataBuffer
                 try {
-                    logger.info(`🔄 Обновление IndexManager ${dataToImport.length} импортированными записями...`, { module: 'Background' });
-                    updateIndexManagerWithData(dataToImport); // Вызываем функцию из IndexManager
-                    logger.info(`✅ IndexManager успешно обновлен импортированными данными.`, { module: 'Background' });
+                    logger.info(`🔄 Обновление IndexManager ${dataToImport.length} импортированными записями (addToBuffer=false)...`, { module: 'Background' });
+                    // Вызываем addScrapedData с флагом addToBuffer = false
+                    updateIndexManagerWithData(dataToImport, false);
+                    logger.info(`✅ IndexManager успешно обновлен импортированными данными (без добавления в буфер).`, { module: 'Background' });
                 } catch (indexUpdateErr) {
                     // Логируем ошибку, но не прерываем основной процесс импорта
                     logger.error(`⚠️ Ошибка обновления IndexManager после импорта: ${indexUpdateErr.message}`, { module: 'Background' });
@@ -350,7 +351,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ status: "success", count: dataToImport.length });
 
                 // 👇 НОВОЕ: Оповещаем popup о том, что данные обновились (если нужно)
-                // Это может быть полезно, если popup хочет обновить таблицу или индексы
                 // chrome.runtime.sendMessage({ type: "dataUpdated" }).catch(err => { /* ignore */ });
 
             } catch (err) {
