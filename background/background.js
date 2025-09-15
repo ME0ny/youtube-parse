@@ -2,9 +2,9 @@
 // Импортируем новые модули
 import { Logger } from '../core/logger.js';
 import { ChromeStorageLogAdapter } from '../adapters/ChromeStorageLogAdapter.js';
-import { ChromeStorageTableAdapter } from '../adapters/ChromeStorageTableAdapter.js';
 import { ScenarioEngine } from '../core/scenario-engine.js';
 import { testCountdownScenario } from '../scenarios/test-countdown.js';
+import { DexieTableAdapter } from '../adapters/DexieTableAdapter.js';
 import { prepareImportedDataIndices } from '../core/data-processor.js';
 import { parseRecommendationScenario } from '../scenarios/parse-recommendation.js';
 import {
@@ -22,8 +22,10 @@ export const logger = new Logger({
     defaultLevel: 'info'
 });
 
-export const tableAdapter = new ChromeStorageTableAdapter({
-    maxSize: 100000 // Установим большой лимит
+export const tableAdapter = new DexieTableAdapter({
+    dbName: 'YouTubeParserOS_DB', // Имя базы данных IndexedDB
+    tableName: 'parsedVideos',   // Имя таблицы внутри БД
+    version: 1                     // Версия схемы (увеличивать при изменениях схемы)
 });
 
 export async function getImportedDataIndices() {

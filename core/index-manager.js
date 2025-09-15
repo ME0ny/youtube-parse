@@ -124,10 +124,6 @@ export function addScrapedData(newScrapedData) {
     console.log(`[IndexManager] visitedVideoIds.size: ${visitedVideoIds.size}`);
     console.log(`[IndexManager] channelVideoCounts.size: ${channelVideoCounts.size}`);
     console.log(`[IndexManager] channelToVideoIds.size: ${channelToVideoIds.size}`);
-    console.log("scrapedDataBuffer", scrapedDataBuffer);
-    console.log("visitedVideoIds", visitedVideoIds);
-    console.log("channelVideoCounts", channelVideoCounts);
-    console.log("channelToVideoIds", channelToVideoIds);
 
 }
 
