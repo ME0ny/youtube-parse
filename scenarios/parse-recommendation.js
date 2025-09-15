@@ -8,6 +8,7 @@ import { tableAdapter } from '../background/background.js'; // 👈 НОВОЕ: 
 import { getUnavailableVideoIds, addUnavailableVideoIds } from '../core/utils/blacklist.js';
 import { selectNextVideo } from '../core/utils/video-selector.js';
 import { getStateSnapshot } from '../core/index-manager.js';
+import { navigateToVideo } from '../core/utils/navigator.js';
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
  */
@@ -176,7 +177,7 @@ export const parseRecommendationScenario = {
             } else {
                 log(`ℹ️ Нет новых данных для сохранения в таблицу.`, { module: 'ParseRecommendation' });
             }
-
+            let nextVideoId = "";
             // --- 5. Выбор следующего видео
             if (scrapedData.length > 0) {
                 log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
@@ -208,7 +209,7 @@ export const parseRecommendationScenario = {
                     const selectionModeInternal = params.mode || 'all_videos'; // Дефолтный режим
 
                     // 👇 ИСПРАВЛЕННЫЙ ВЫЗОВ selectNextVideo
-                    const nextVideoId = await selectNextVideo(
+                    nextVideoId = await selectNextVideo(
                         dependencies,              // 1. Объект с зависимостями
                         currentSourceVideoId,      // 2. ID текущего видео (источника)
                         selectionModeInternal,     // 3. Режим выбора
@@ -228,6 +229,22 @@ export const parseRecommendationScenario = {
                 }
             } else {
                 log(`ℹ️ Нет данных для выбора следующего видео.`, { module: 'ParseRecommendation' });
+            }
+
+            // --- 6. 👇 НОВОЕ: Переход на выбранное видео ---
+            if (nextVideoId) {
+                log(`🧭 Попытка перехода на выбранное видео: ${nextVideoId}...`, { module: 'ParseRecommendation' });
+                try {
+                    await navigateToVideo(context, nextVideoId);
+                    log(`✅ Команда на переход на видео ${nextVideoId} отправлена.`, { module: 'ParseRecommendation', level: 'success' });
+                    // Примечание: Сценарий завершится, так как страница меняется.
+                    // Background может отследить это через события tabs.onUpdated.
+                } catch (navErr) {
+                    log(`❌ Ошибка перехода на видео ${nextVideoId}: ${navErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    // Не прерываем сценарий из-за ошибки перехода, это вторично
+                }
+            } else {
+                log(`ℹ️ Переход не выполняется, так как следующее видео не было выбрано.`, { module: 'ParseRecommendation' });
             }
 
             log(`🎉 Сценарий "Парсинг рекомендаций" успешно завершён.`, { module: 'ParseRecommendation' });

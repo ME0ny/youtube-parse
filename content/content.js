@@ -166,6 +166,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // keep channel open for async response
     }
 
+    if (request.action === "navigateToVideo") {
+        console.log("[Content Script] Получена команда на переход по URL:", request.url);
+        (async () => {
+            try {
+                // Проверяем, является ли текущая вкладка той, на которую нужно перейти
+                // (на всякий случай, хотя обычно tabId уже правильный)
+                // const currentTab = await chrome.tabs.getCurrent();
+                // if (currentTab.id !== sender.tab.id) { ... }
+
+                // Выполняем переход, изменяя location.href текущей страницы
+                window.location.href = request.url;
+                console.log(`[Content Script] Выполнен переход на ${request.url}`);
+                // Отправляем успешный ответ
+                sendResponse({ status: "success", message: `Переход на ${request.url} инициирован` });
+            } catch (err) {
+                console.error("[Content Script] Ошибка перехода:", err);
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        // Возвращаем true, чтобы указать, что ответ будет асинхронным
+        return true;
+    }
+
 
     console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });
