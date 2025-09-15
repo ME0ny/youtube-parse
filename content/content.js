@@ -189,6 +189,52 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "checkPageLoaded") {
+        console.log("[Content Script] Получен запрос на проверку загрузки страницы.");
+        (async () => {
+            try {
+                // --- УЛУЧШЕННАЯ ЛОГИКА ПРОВЕРКИ ---
+                // Вместо жестких требований, проверяем "признаки" загрузки
+
+                // 1. Проверяем базовые элементы страницы видео
+                const isWatchPageLikely = document.querySelector('ytd-watch-flexy') !== null;
+
+                // 2. Проверяем, появился ли хоть один элемент рекомендаций
+                // Это может быть как целая секция, так и просто одна карточка
+                const hasAnyRecommendationElement =
+                    document.querySelector('#related') !== null || // Контейнер рекомендаций
+                    document.querySelector('ytd-compact-video-renderer') !== null || // Карточка видео
+                    document.querySelector('ytd-item-section-renderer') !== null; // Общая секция
+
+                // 3. (Опционально) Проверяем, загрузился ли плеер
+                // const isPlayerLikelyReady = document.querySelector('#player') !== null || document.querySelector('ytd-watch-flexy video') !== null;
+
+                // Страница считается "загруженной", если это похоже на страницу видео
+                // и появились какие-то элементы рекомендаций
+                const isLoaded = isWatchPageLikely && hasAnyRecommendationElement;
+
+                console.log(`[Content Script] Страница "похоже загружена": ${isLoaded}.`, {
+                    isWatchPageLikely,
+                    hasAnyRecommendationElement,
+                    // isPlayerLikelyReady
+                });
+
+                sendResponse({
+                    status: "success",
+                    isLoaded: isLoaded,
+                    details: {
+                        isWatchPageLikely,
+                        hasAnyRecommendationElement,
+                        // isPlayerLikelyReady
+                    }
+                });
+            } catch (err) {
+                console.error("[Content Script] Ошибка проверки загрузки страницы:", err);
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
+    }
 
     console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });

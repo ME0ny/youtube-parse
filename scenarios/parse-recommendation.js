@@ -1,187 +1,171 @@
-
 // scenarios/parse-recommendation.js
 import { scrollPageNTimes } from '../core/utils/scroller.js';
 import { parseAndHighlight, removeParserHighlights } from '../core/utils/parser.js';
 import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
-import { logger } from '../background/background.js'; // Убедись, что logger доступен
-import { tableAdapter } from '../background/background.js'; // 👈 НОВОЕ: Импорт tableAdapter
+import { logger } from '../background/background.js';
+import { tableAdapter } from '../background/background.js';
 import { getUnavailableVideoIds, addUnavailableVideoIds } from '../core/utils/blacklist.js';
 import { selectNextVideo } from '../core/utils/video-selector.js';
 import { getStateSnapshot } from '../core/index-manager.js';
 import { navigateToVideo } from '../core/utils/navigator.js';
+
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
  */
 export const parseRecommendationScenario = {
     id: 'parse-recommendation',
     name: 'Парсинг рекомендаций',
-    description: 'Прокручивает страницу с рекомендациями и готовит данные для парсинга.',
+    description: 'Прокручивает страницу с рекомендациями, парсит видео и переходит к следующему.',
 
     /**
      * @param {import('../core/types/scenario.types.js').ScenarioContext} context
      */
     async execute(context) {
         const { log, params = {}, tabId, abortSignal } = context;
-        console.log("[ParseRecommendation] Начало выполнения, context:", { params, tabId }); // <-- Лог
+        console.log("[ParseRecommendation] Начало выполнения, context:", { params, tabId });
 
-        // Параметры по умолчанию, как указано в задаче
+        // --- Параметры по умолчанию ---
+        const totalRequestedIterations = parseInt(params.iterations, 10) || 1;
         const scrollParams = {
             count: parseInt(params.count, 10) || 16,
             delayMs: parseInt(params.delayMs, 10) || 1500,
             step: parseInt(params.step, 10) || 1000
         };
-
-        const selectionMode = params.mode || 'all_videos'; // По умолчанию 'all_videos'
-        const internalSelectionMode = selectionMode;
+        const selectionModeInternal = params.mode || 'all_videos';
+        const maxRetriesPerIteration = 3; // Максимальное количество попыток на одну итерацию
 
         log(`🚀 Сценарий "Парсинг рекомендаций" запущен.`, { module: 'ParseRecommendation' });
+        log(`🔢 Запрошено итераций: ${totalRequestedIterations}`, { module: 'ParseRecommendation' });
         log(`🔧 Параметры скроллинга: ${JSON.stringify(scrollParams)}`, { module: 'ParseRecommendation' });
-        log(`🧠 Алгоритм выбора следующего видео: ${internalSelectionMode}`, { module: 'ParseRecommendation' }); // 👈 НОВОЕ
+        log(`🧠 Алгоритм выбора следующего видео: ${selectionModeInternal}`, { module: 'ParseRecommendation' });
 
-        try {
-            // Проверяем, не было ли запроса на остановку до начала
-            log(`⏳ Проверка abortSignal перед скроллингом...`, { module: 'ParseRecommendation' });
-            await abortSignal();
-            log(`✅ Проверка abortSignal пройдена.`, { module: 'ParseRecommendation' });
+        let successfulTransitions = 0; // Фактически выполненные переходы
+        let noTransitionStreak = 0; // Счетчик итераций без перехода
+        const maxNoTransitionStreak = 3; // Максимум итераций без перехода до остановки
 
-            // --- 0. НОВОЕ: Проверка доступности текущего видео ---
-            log(`🔒 Проверка доступности текущего видео...`, { module: 'ParseRecommendation' });
+        // --- Цикл итераций ---
+        // Итерации продолжаются, пока не выполнено totalRequestedIterations переходов
+        // или не исчерпан лимит попыток без перехода
+        while (successfulTransitions < totalRequestedIterations && noTransitionStreak < maxNoTransitionStreak) {
+
+            const currentIterationNumber = successfulTransitions + 1;
+            log(`🔄 === НАЧАЛО ИТЕРАЦИИ ${currentIterationNumber}/${totalRequestedIterations} (Попытка перехода ${successfulTransitions + 1}) ===`, { module: 'ParseRecommendation' });
+
+            // Проверка на остановку перед началом итерации
             try {
-                // Получаем URL текущей вкладки
-                if (typeof tabId !== 'number' || tabId < 0) {
-                    throw new Error(`Недействительный tabId: ${tabId}`);
-                }
-                const tab = await chrome.tabs.get(tabId);
-                const currentUrl = tab.url;
-                log(`🔒 Текущий URL: ${currentUrl}`, { module: 'ParseRecommendation' });
-
-                // Извлекаем videoId из URL
-                let currentVideoId = null;
-                try {
-                    const url = new URL(currentUrl);
-                    if (url.hostname.includes('youtube.com') && url.pathname === '/watch') {
-                        currentVideoId = url.searchParams.get('v');
-                    }
-                } catch (urlErr) {
-                    console.warn("[ParseRecommendation] Ошибка разбора URL:", urlErr);
-                }
-
-                if (!currentVideoId) {
-                    log(`⚠️ Не удалось извлечь videoId из URL. Пропускаем проверку доступности.`, { module: 'ParseRecommendation', level: 'warn' });
-                    // Продолжаем выполнение
-                } else {
-                    log(`🔒 Проверяем доступность видео ID: ${currentVideoId}...`, { module: 'ParseRecommendation' });
-
-                    // Отправляем сообщение content script для проверки
-                    const checkResponse = await chrome.tabs.sendMessage(tabId, {
-                        action: "checkVideoAvailability"
-                    });
-
-                    if (checkResponse && checkResponse.status === "success") {
-                        const isAvailable = checkResponse.isAvailable;
-                        log(`🔒 Результат проверки для ${currentVideoId}: ${isAvailable ? 'Доступно' : 'Недоступно'}`, { module: 'ParseRecommendation', level: isAvailable ? 'info' : 'warn' });
-
-                        if (!isAvailable) {
-                            // Видео недоступно - добавляем в черный список
-                            log(`🔒 Видео ${currentVideoId} недоступно. Добавляем в черный список.`, { module: 'ParseRecommendation', level: 'error' });
-                            await addUnavailableVideoIds(currentVideoId);
-                            log(`🔒 Видео ${currentVideoId} добавлено в черный список недоступных.`, { module: 'ParseRecommendation', level: 'warn' });
-
-                            // Здесь можно решить, прерывать ли сценарий или продолжать
-                            // Для MVP: прерываем сценарий
-                            log(`⏹️ Сценарий остановлен из-за недоступности текущего видео (${currentVideoId}).`, { module: 'ParseRecommendation', level: 'error' });
-                            throw new Error(`Текущее видео (${currentVideoId}) недоступно. Добавлено в черный список.`);
-
-                            // Альтернатива: продолжить, но залогировать ошибку
-                            // log(`⚠️ Текущее видео недоступно, но сценарий продолжится.`, { module: 'ParseRecommendation', level: 'warn' });
-                        } else {
-                            log(`✅ Текущее видео доступно. Продолжаем выполнение.`, { module: 'ParseRecommendation' });
-                        }
-                    } else {
-                        const checkErrorMsg = checkResponse?.message || "Неизвестная ошибка проверки";
-                        log(`⚠️ Ошибка проверки доступности: ${checkErrorMsg}`, { module: 'ParseRecommendation', level: 'warn' });
-                        // Продолжаем выполнение, несмотря на ошибку проверки
-                    }
-                }
-            } catch (checkErr) {
-                log(`⚠️ Ошибка связи при проверке доступности: ${checkErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
-                // Продолжаем выполнение, несмотря на ошибку связи
+                await abortSignal();
+            } catch (abortErr) {
+                log(`⏹️ Сценарий остановлен пользователем. Выполнено переходов: ${successfulTransitions}/${totalRequestedIterations}.`, { module: 'ParseRecommendation', level: 'warn' });
+                return; // Завершаем весь сценарий
             }
-            // --- 1. Скроллинг страницы ---
-            log(`🔄 Вызов scrollPageNTimes...`, { module: 'ParseRecommendation' });
-            await scrollPageNTimes(context, scrollParams.count, scrollParams.delayMs, scrollParams.step);
-            log(`✅ scrollPageNTimes завершен.`, { module: 'ParseRecommendation' });
 
-            // --- 2. Парсинг и подсветка ---
-            await removeParserHighlights(context);
+            let attempt = 1;
+            let iterationCompletedWithTransition = false; // Флаг успешного перехода в этой "попытке" итерации
 
-            const parseResult = await parseAndHighlight(context);
-            const highlightedCount = parseResult.highlightedCount;
-            const scrapedData = parseResult.scrapedData || [];
+            // --- Цикл попыток для текущей "логической" итерации ---
+            while (attempt <= maxRetriesPerIteration && !iterationCompletedWithTransition) {
+                log(`🔁 Попытка ${attempt}/${maxRetriesPerIteration} для итерации ${currentIterationNumber}...`, { module: 'ParseRecommendation' });
 
-            log(`✅ Найдено и подсвечено ${highlightedCount} видео.`, { module: 'ParseRecommendation' });
-
-            // Для отладки: логируем количество полученных HTML
-            log(`📄 Получено HTML-кодов карточек: ${scrapedData?.length || 0}`, { module: 'ParseRecommendation' });
-
-            if (scrapedData.length > 0) {
-                log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });
                 try {
-                    // Передаем извлеченные данные в IndexManager
-                    updateIndexManager(scrapedData);
-                    log(`✅ Индексы IndexManager успешно обновлены.`, { module: 'ParseRecommendation' });
-                } catch (indexUpdateErr) {
-                    log(`❌ Ошибка обновления индексов IndexManager: ${indexUpdateErr.message}`, { module: 'ParseRecommendation', level: 'error' });
-                    // Не прерываем сценарий из-за ошибки обновления индексов, это вторично
-                }
-            } else {
-                log(`ℹ️ Нет новых данных для обновления индексов.`, { module: 'ParseRecommendation' });
-            }
-            // --- 4. Загрузить данные в таблицу
-            if (scrapedData.length > 0) {
-                log(`💾 Сохранение ${scrapedData.length} записей в таблицу...`, { module: 'ParseRecommendation' });
-                try {
-                    // Добавляем временной штамп, если его нет
-                    const dataToSave = scrapedData.map(item => ({
-                        ...item,
-                        timestamp: item.timestamp || Date.now() // Добавляем timestamp, если отсутствует
-                    }));
+                    // --- 0. Проверка доступности текущего видео ---
+                    log(`🔒 Проверка доступности текущего видео...`, { module: 'ParseRecommendation' });
+                    let isCurrentVideoAvailable = true;
+                    let currentVideoIdForCheck = 'unknown_current_video';
 
-                    // Используем tableAdapter для сохранения данных
-                    // Предполагается, что tableAdapter.addBatch существует
-                    if (typeof tableAdapter.addBatch === 'function') {
-                        await tableAdapter.addBatch(dataToSave);
-                        log(`✅ ${dataToSave.length} записей успешно сохранены в таблицу.`, { module: 'ParseRecommendation' });
-                    } else if (typeof tableAdapter.add === 'function') {
-                        // Если addBatch нет, добавляем по одной (менее эффективно)
-                        log(`⚠️ tableAdapter.addBatch не найден, сохраняем по одной записи...`, { module: 'ParseRecommendation', level: 'warn' });
-                        let savedCount = 0;
-                        for (const item of dataToSave) {
-                            try {
-                                await tableAdapter.add(item);
-                                savedCount++;
-                            } catch (addItemErr) {
-                                log(`❌ Ошибка сохранения одной записи: ${addItemErr.message}`, { module: 'ParseRecommendation', level: 'error' });
-                                // Не прерываем весь процесс из-за одной ошибки
+                    if (typeof tabId === 'number' && tabId > 0) {
+                        try {
+                            const tab = await chrome.tabs.get(tabId);
+                            const url = new URL(tab.url);
+                            currentVideoIdForCheck = url.searchParams.get('v') || 'unknown_video_id_from_url';
+
+                            const checkResponse = await chrome.tabs.sendMessage(tabId, {
+                                action: "checkVideoAvailability"
+                            });
+
+                            if (checkResponse && checkResponse.status === "success") {
+                                isCurrentVideoAvailable = checkResponse.isAvailable;
+                                log(`🔒 Результат проверки для ${currentVideoIdForCheck}: ${isCurrentVideoAvailable ? 'Доступно' : 'Недоступно'}`, { module: 'ParseRecommendation', level: isCurrentVideoAvailable ? 'info' : 'warn' });
+                            } else {
+                                const checkErrorMsg = checkResponse?.message || "Неизвестная ошибка проверки";
+                                log(`⚠️ Ошибка проверки доступности: ${checkErrorMsg}`, { module: 'ParseRecommendation', level: 'warn' });
                             }
+                        } catch (urlOrCheckErr) {
+                            log(`⚠️ Ошибка связи при проверке доступности: ${urlOrCheckErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
                         }
-                        log(`✅ ${savedCount}/${dataToSave.length} записей успешно сохранены в таблицу (по одной).`, { module: 'ParseRecommendation' });
-                    } else {
-                        throw new Error("Адаптер таблицы не поддерживает методы добавления (add/addBatch)");
                     }
 
-                } catch (saveErr) {
-                    log(`❌ Ошибка сохранения данных в таблицу: ${saveErr.message}`, { module: 'ParseRecommendation', level: 'error' });
-                    // Не прерываем сценарий из-за ошибки сохранения, это вторично
-                }
-            } else {
-                log(`ℹ️ Нет новых данных для сохранения в таблицу.`, { module: 'ParseRecommendation' });
-            }
-            let nextVideoId = "";
-            // --- 5. Выбор следующего видео
-            if (scrapedData.length > 0) {
-                log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
-                try {
+                    if (!isCurrentVideoAvailable) {
+                        log(`🔒 Текущее видео (${currentVideoIdForCheck}) недоступно. Добавляем в черный список и завершаем итерацию.`, { module: 'ParseRecommendation', level: 'error' });
+                        await addUnavailableVideoIds(currentVideoIdForCheck);
+                        // Завершаем попытки для этой логической итерации, не увеличивая successfulTransitions
+                        break; // Выходим из while(attempt...), что приведет к переходу к следующей логической итерации
+                    }
+
+                    // --- 1. Скроллинг страницы ---
+                    log(`🔄 Вызов scrollPageNTimes...`, { module: 'ParseRecommendation' });
+                    await scrollPageNTimes(context, scrollParams.count, scrollParams.delayMs, scrollParams.step);
+                    log(`✅ scrollPageNTimes завершен.`, { module: 'ParseRecommendation' });
+
+                    // --- 2. Парсинг и подсветка ---
+                    await removeParserHighlights(context);
+                    const parseResult = await parseAndHighlight(context);
+                    const highlightedCount = parseResult.highlightedCount;
+                    const scrapedData = parseResult.scrapedData || [];
+
+                    log(`✅ Найдено и подсвечено ${highlightedCount} видео.`, { module: 'ParseRecommendation' });
+                    log(`📄 Получено HTML-кодов карточек: ${scrapedData?.length || 0}`, { module: 'ParseRecommendation' });
+
+                    // --- Критическая проверка: Если данных нет, итерация не может быть успешной ---
+                    if (scrapedData.length === 0) {
+                        log(`🛑 Парсинг не нашел данных. Итерация ${currentIterationNumber} не может быть завершена.`, { module: 'ParseRecommendation', level: 'warn' });
+                        // Не увеличиваем successfulTransitions, не сбрасываем noTransitionStreak, так как перехода не было
+                        // Просто завершаем попытки этой итерации
+                        break; // Выходим из while(attempt...)
+                    }
+
+                    // --- 3. Обновление индексов IndexManager ---
+                    log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });
+                    try {
+                        updateIndexManager(scrapedData);
+                        log(`✅ Индексы IndexManager успешно обновлены.`, { module: 'ParseRecommendation' });
+                    } catch (indexUpdateErr) {
+                        log(`❌ Ошибка обновления индексов IndexManager: ${indexUpdateErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    }
+
+                    // --- 4. Сохранение данных в таблицу ---
+                    log(`💾 Сохранение ${scrapedData.length} записей в таблицу...`, { module: 'ParseRecommendation' });
+                    try {
+                        const dataToSave = scrapedData.map(item => ({
+                            ...item,
+                            timestamp: item.timestamp || Date.now()
+                        }));
+
+                        if (typeof tableAdapter.addBatch === 'function') {
+                            await tableAdapter.addBatch(dataToSave);
+                            log(`✅ ${dataToSave.length} записей успешно сохранены в таблицу.`, { module: 'ParseRecommendation' });
+                        } else if (typeof tableAdapter.add === 'function') {
+                            log(`⚠️ tableAdapter.addBatch не найден, сохраняем по одной записи...`, { module: 'ParseRecommendation', level: 'warn' });
+                            let savedCount = 0;
+                            for (const item of dataToSave) {
+                                try {
+                                    await tableAdapter.add(item);
+                                    savedCount++;
+                                } catch (addItemErr) {
+                                    log(`❌ Ошибка сохранения одной записи: ${addItemErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                                }
+                            }
+                            log(`✅ ${savedCount}/${dataToSave.length} записей успешно сохранены в таблицу (по одной).`, { module: 'ParseRecommendation' });
+                        } else {
+                            throw new Error("Адаптер таблицы не поддерживает методы добавления (add/addBatch)");
+                        }
+                    } catch (saveErr) {
+                        log(`❌ Ошибка сохранения данных в таблицу: ${saveErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    }
+
+                    // --- 5. Выбор следующего видео ---
+                    let nextVideoId = null;
+                    log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
+
                     // Получаем ID текущего видео (источника)
                     let currentSourceVideoId = 'unknown_source';
                     if (typeof tabId === 'number' && tabId > 0) {
@@ -195,69 +179,155 @@ export const parseRecommendationScenario = {
                     }
                     log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
 
-                    // 👇 НОВОЕ: Получаем необходимые зависимости из IndexManager
-                    const indexSnapshot = getStateSnapshot(); // Получаем копию состояния
+                    // Получаем необходимые зависимости из IndexManager
+                    const indexSnapshot = getStateSnapshot();
                     const dependencies = {
-                        visitedSourceVideoIds: indexSnapshot.visitedVideoIds, // Это Set<sourceVideoId>
-                        channelVideoCounts: indexSnapshot.channelVideoCounts, // Это Map<channel, count>
-                        channelToVideoIds: indexSnapshot.channelToVideoIds // Это Map<channel, Set<videoId>>
+                        visitedSourceVideoIds: indexSnapshot.visitedVideoIds,
+                        channelVideoCounts: indexSnapshot.channelVideoCounts,
+                        channelToVideoIds: indexSnapshot.channelToVideoIds
                     };
 
-                    // 👇 НОВОЕ: Получаем режим выбора из параметров сценария
-                    // Убедитесь, что params.mode содержит 'current_recommendations' или 'all_videos'
-                    // Если в UI у вас другие значения, их нужно преобразовать
-                    const selectionModeInternal = params.mode || 'all_videos'; // Дефолтный режим
+                    // Попытка выбора видео с повторами в случае недоступности выбранного
+                    let selectionAttempt = 1;
+                    const maxSelectionRetries = 5; // Лимит попыток выбора, если видео недоступно
+                    let selectionSuccessful = false;
 
-                    // 👇 ИСПРАВЛЕННЫЙ ВЫЗОВ selectNextVideo
-                    nextVideoId = await selectNextVideo(
-                        dependencies,              // 1. Объект с зависимостями
-                        currentSourceVideoId,      // 2. ID текущего видео (источника)
-                        selectionModeInternal,     // 3. Режим выбора
-                        scrapedData,               // 4. Данные для 'current_recommendations'
-                        context                    // 5. Контекст для логирования (log)
-                    );
+                    while (selectionAttempt <= maxSelectionRetries && !selectionSuccessful) {
+                        log(`🔍 Попытка выбора видео ${selectionAttempt}/${maxSelectionRetries}...`, { module: 'ParseRecommendation' });
 
-                    if (nextVideoId) {
-                        log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
-                        // TODO: Здесь будет логика перехода на nextVideoId в следующем шаге
-                    } else {
-                        log(`⚠️ Не удалось выбрать следующее видео.`, { module: 'ParseRecommendation', level: 'warn' });
+                        try {
+                            const tempNextVideoId = await selectNextVideo(
+                                dependencies,
+                                currentSourceVideoId,
+                                selectionModeInternal,
+                                scrapedData,
+                                context
+                            );
+
+                            if (!tempNextVideoId) {
+                                log(`⚠️ selectNextVideo не вернул ID видео.`, { module: 'ParseRecommendation', level: 'warn' });
+                                break; // Нет кандидатов, выходим из цикла выбора
+                            }
+
+                            // Проверяем, не находится ли выбранное видео в черном списке
+                            const unavailableIds = await getUnavailableVideoIds();
+                            if (unavailableIds.has(tempNextVideoId)) {
+                                log(`⚠️ Выбранное видео ${tempNextVideoId} находится в черном списке. Повторяем выбор.`, { module: 'ParseRecommendation', level: 'warn' });
+                                selectionAttempt++;
+                                if (selectionAttempt > maxSelectionRetries) {
+                                    log(`❌ Достигнут лимит попыток выбора. Не удалось выбрать доступное видео.`, { module: 'ParseRecommendation', level: 'error' });
+                                }
+                                continue; // Продолжаем цикл выбора
+                            }
+
+                            // Если видео доступно, используем его
+                            nextVideoId = tempNextVideoId;
+                            selectionSuccessful = true;
+                            log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
+
+                        } catch (selectErr) {
+                            log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                            break; // Прерываем попытки выбора при ошибке
+                        }
                     }
-                } catch (selectErr) {
-                    log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
-                    console.error("[ParseRecommendation] Stack trace ошибки выбора:", selectErr); // Для отладки
+
+                    if (!nextVideoId) {
+                        log(`⚠️ Не удалось выбрать следующее видео после ${maxSelectionRetries} попыток.`, { module: 'ParseRecommendation', level: 'warn' });
+                        // Завершаем попытки итерации
+                        break; // Выходим из while(attempt...)
+                    }
+
+                    // --- 6. Переход на выбранное видео ---
+                    log(`🧭 Попытка перехода на выбранное видео: ${nextVideoId}...`, { module: 'ParseRecommendation' });
+                    try {
+                        await navigateToVideo(context, nextVideoId);
+                        log(`✅ Команда на переход на видео ${nextVideoId} отправлена.`, { module: 'ParseRecommendation', level: 'success' });
+
+                        // --- 7. Ожидание загрузки новой страницы ---
+                        log(`⏳ Ожидание загрузки новой страницы...`, { module: 'ParseRecommendation' });
+                        // --- НОВОЕ: Умное ожидание ---
+                        let pageLoaded = false;
+                        const maxWaitTime = 5000; // Максимальное время ожидания 15 секунд
+                        const checkInterval = 500; // Проверяем каждые 500 мс
+                        const maxChecks = maxWaitTime / checkInterval;
+                        let checks = 0;
+
+                        while (checks < maxChecks && !pageLoaded) {
+                            checks++;
+                            log(`⏳ Проверка загрузки страницы ${checks}/${maxChecks}...`, { module: 'ParseRecommendation' });
+                            try {
+                                // Проверяем наличие ключевых элементов YouTube
+                                const checkResult = await chrome.tabs.sendMessage(tabId, {
+                                    action: "checkPageLoaded"
+                                });
+
+                                if (checkResult && checkResult.status === "success" && checkResult.isLoaded) {
+                                    pageLoaded = true;
+                                    log(`✅ Новая страница загружена (проверка ${checks}).`, { module: 'ParseRecommendation' });
+                                } else {
+                                    log(`⏳ Страница еще не загружена (проверка ${checks}).`, { module: 'ParseRecommendation' });
+                                }
+                            } catch (checkErr) {
+                                log(`⚠️ Ошибка проверки загрузки страницы (проверка ${checks}): ${checkErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                                // Продолжаем ожидание даже при ошибке проверки
+                            }
+
+                            if (!pageLoaded && checks < maxChecks) {
+                                await new Promise(resolve => setTimeout(resolve, checkInterval));
+                            }
+                        }
+
+                        if (!pageLoaded) {
+                            log(`⚠️ Страница не загрузилась за ${maxWaitTime}мс. Продолжаем сценарий.`, { module: 'ParseRecommendation', level: 'warn' });
+                        }
+                        // --- Конец умного ожидания ---
+
+                        iterationCompletedWithTransition = true; // Итерация завершена успешно с переходом
+                        successfulTransitions++; // Увеличиваем счетчик успешных переходов
+                        noTransitionStreak = 0; // Сбрасываем счетчик "бездействия"
+
+                    } catch (navErr) {
+                        log(`❌ Ошибка перехода на видео ${nextVideoId}: ${navErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                        // Переход не удался, пробуем снова (следующая попытка)
+                    }
+
+                } catch (iterationErr) {
+                    log(`❌ Ошибка в итерации ${currentIterationNumber} (попытка ${attempt}): ${iterationErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    console.error("[ParseRecommendation] Stack trace ошибки итерации:", iterationErr);
+
+                    if (attempt < maxRetriesPerIteration) {
+                        log(`🔁 Попытка ${attempt} не удалась. Перезагрузка страницы и повтор...`, { module: 'ParseRecommendation', level: 'warn' });
+                        try {
+                            if (typeof tabId === 'number' && tabId > 0) {
+                                await chrome.tabs.reload(tabId);
+                                log(`🔄 Страница перезагружена. Ожидание загрузки...`, { module: 'ParseRecommendation', level: 'info' });
+                                // Пауза после перезагрузки
+                                await new Promise(resolve => setTimeout(resolve, 3000));
+                            }
+                        } catch (reloadErr) {
+                            log(`❌ Ошибка перезагрузки страницы: ${reloadErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                        }
+                    } else {
+                        log(`❌ Все ${maxRetriesPerIteration} попытки итерации ${currentIterationNumber} не удались.`, { module: 'ParseRecommendation', level: 'error' });
+                    }
+                    attempt++;
                 }
-            } else {
-                log(`ℹ️ Нет данных для выбора следующего видео.`, { module: 'ParseRecommendation' });
-            }
+            } // Конец цикла попыток для логической итерации
 
-            // --- 6. 👇 НОВОЕ: Переход на выбранное видео ---
-            if (nextVideoId) {
-                log(`🧭 Попытка перехода на выбранное видео: ${nextVideoId}...`, { module: 'ParseRecommendation' });
-                try {
-                    await navigateToVideo(context, nextVideoId);
-                    log(`✅ Команда на переход на видео ${nextVideoId} отправлена.`, { module: 'ParseRecommendation', level: 'success' });
-                    // Примечание: Сценарий завершится, так как страница меняется.
-                    // Background может отследить это через события tabs.onUpdated.
-                } catch (navErr) {
-                    log(`❌ Ошибка перехода на видео ${nextVideoId}: ${navErr.message}`, { module: 'ParseRecommendation', level: 'error' });
-                    // Не прерываем сценарий из-за ошибки перехода, это вторично
+            if (!iterationCompletedWithTransition) {
+                log(`❌ Итерация ${currentIterationNumber} не завершена успешно после ${maxRetriesPerIteration} попыток или из-за отсутствия данных.`, { module: 'ParseRecommendation', level: 'error' });
+                noTransitionStreak++; // Увеличиваем счетчик неудач
+                if (noTransitionStreak >= maxNoTransitionStreak) {
+                    log(`⛔ Достигнут лимит (${maxNoTransitionStreak}) итераций без перехода. Завершение сценария.`, { module: 'ParseRecommendation', level: 'error' });
+                    throw new Error(`Достигнут лимит итераций без перехода (${maxNoTransitionStreak}).`);
                 }
+                // Если не достигли лимита, переходим к следующей логической итерации
             } else {
-                log(`ℹ️ Переход не выполняется, так как следующее видео не было выбрано.`, { module: 'ParseRecommendation' });
+                log(`✅ === ИТЕРАЦИЯ ${currentIterationNumber} ЗАВЕРШЕНА С ПЕРЕХОДОМ ===`, { module: 'ParseRecommendation', level: 'success' });
             }
 
-            log(`🎉 Сценарий "Парсинг рекомендаций" успешно завершён.`, { module: 'ParseRecommendation' });
+        } // Конец основного цикла итераций
 
-        } catch (error) {
-            console.error("[ParseRecommendation] Поймано исключение:", error); // <-- Лог ошибок
-
-            if (error.message === 'Сценарий остановлен пользователем.') {
-                log(`⏹️ Сценарий "Парсинг рекомендаций" остановлен пользователем.`, { module: 'ParseRecommendation', level: 'warn' });
-            } else {
-                log(`❌ Ошибка в сценарии "Парсинг рекомендаций": ${error.message}`, { module: 'ParseRecommendation', level: 'error' });
-                throw error; // Перебрасываем ошибку для обработки в ScenarioEngine
-            }
-        }
+        log(`🎉 Сценарий "Парсинг рекомендаций" завершён. Выполнено переходов: ${successfulTransitions}/${totalRequestedIterations}.`, { module: 'ParseRecommendation', level: 'success' });
     }
 };

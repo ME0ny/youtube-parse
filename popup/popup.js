@@ -234,7 +234,7 @@ class PopupApp {
                     iterations,
                     mode,
                     // Параметры для скроллинга (можно сделать настройками позже)
-                    count: 3,
+                    count: 16,
                     delayMs: 1500,
                     step: 1000
                 }
