@@ -6,6 +6,8 @@ import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
 import { logger } from '../background/background.js'; // Убедись, что logger доступен
 import { tableAdapter } from '../background/background.js'; // 👈 НОВОЕ: Импорт tableAdapter
 import { getUnavailableVideoIds, addUnavailableVideoIds } from '../core/utils/blacklist.js';
+import { selectNextVideo } from '../core/utils/video-selector.js';
+import { getStateSnapshot } from '../core/index-manager.js';
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
  */
@@ -28,8 +30,12 @@ export const parseRecommendationScenario = {
             step: parseInt(params.step, 10) || 1000
         };
 
+        const selectionMode = params.mode || 'all_videos'; // По умолчанию 'all_videos'
+        const internalSelectionMode = selectionMode;
+
         log(`🚀 Сценарий "Парсинг рекомендаций" запущен.`, { module: 'ParseRecommendation' });
         log(`🔧 Параметры скроллинга: ${JSON.stringify(scrollParams)}`, { module: 'ParseRecommendation' });
+        log(`🧠 Алгоритм выбора следующего видео: ${internalSelectionMode}`, { module: 'ParseRecommendation' }); // 👈 НОВОЕ
 
         try {
             // Проверяем, не было ли запроса на остановку до начала
@@ -170,6 +176,60 @@ export const parseRecommendationScenario = {
             } else {
                 log(`ℹ️ Нет новых данных для сохранения в таблицу.`, { module: 'ParseRecommendation' });
             }
+
+            // --- 5. Выбор следующего видео
+            if (scrapedData.length > 0) {
+                log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
+                try {
+                    // Получаем ID текущего видео (источника)
+                    let currentSourceVideoId = 'unknown_source';
+                    if (typeof tabId === 'number' && tabId > 0) {
+                        try {
+                            const tab = await chrome.tabs.get(tabId);
+                            const url = new URL(tab.url);
+                            currentSourceVideoId = url.searchParams.get('v') || 'unknown_source_from_url';
+                        } catch (urlErr) {
+                            log(`⚠️ Ошибка получения текущего videoId из URL: ${urlErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                        }
+                    }
+                    log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
+
+                    // 👇 НОВОЕ: Получаем необходимые зависимости из IndexManager
+                    const indexSnapshot = getStateSnapshot(); // Получаем копию состояния
+                    const dependencies = {
+                        visitedSourceVideoIds: indexSnapshot.visitedVideoIds, // Это Set<sourceVideoId>
+                        channelVideoCounts: indexSnapshot.channelVideoCounts, // Это Map<channel, count>
+                        channelToVideoIds: indexSnapshot.channelToVideoIds // Это Map<channel, Set<videoId>>
+                    };
+
+                    // 👇 НОВОЕ: Получаем режим выбора из параметров сценария
+                    // Убедитесь, что params.mode содержит 'current_recommendations' или 'all_videos'
+                    // Если в UI у вас другие значения, их нужно преобразовать
+                    const selectionModeInternal = params.mode || 'all_videos'; // Дефолтный режим
+
+                    // 👇 ИСПРАВЛЕННЫЙ ВЫЗОВ selectNextVideo
+                    const nextVideoId = await selectNextVideo(
+                        dependencies,              // 1. Объект с зависимостями
+                        currentSourceVideoId,      // 2. ID текущего видео (источника)
+                        selectionModeInternal,     // 3. Режим выбора
+                        scrapedData,               // 4. Данные для 'current_recommendations'
+                        context                    // 5. Контекст для логирования (log)
+                    );
+
+                    if (nextVideoId) {
+                        log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
+                        // TODO: Здесь будет логика перехода на nextVideoId в следующем шаге
+                    } else {
+                        log(`⚠️ Не удалось выбрать следующее видео.`, { module: 'ParseRecommendation', level: 'warn' });
+                    }
+                } catch (selectErr) {
+                    log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    console.error("[ParseRecommendation] Stack trace ошибки выбора:", selectErr); // Для отладки
+                }
+            } else {
+                log(`ℹ️ Нет данных для выбора следующего видео.`, { module: 'ParseRecommendation' });
+            }
+
             log(`🎉 Сценарий "Парсинг рекомендаций" успешно завершён.`, { module: 'ParseRecommendation' });
 
         } catch (error) {

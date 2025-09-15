@@ -26,6 +26,9 @@
             ],
             "js": [
                 "content/modules/scroller.js",
+                "content/modules/parser.js",
+                "content/modules/scraper.js",
+                "content/modules/video-checker.js",
                 "content/content.js"
             ],
             "run_at": "document_idle"
@@ -381,6 +384,12 @@ import { ScenarioEngine } from '../core/scenario-engine.js';
 import { testCountdownScenario } from '../scenarios/test-countdown.js';
 import { prepareImportedDataIndices } from '../core/data-processor.js';
 import { parseRecommendationScenario } from '../scenarios/parse-recommendation.js';
+import {
+    initialize as initIndexManager,
+    reset as resetIndexManager,
+    getStateSnapshot,
+    addScrapedData as updateIndexManagerWithData
+} from '../core/index-manager.js';
 
 // --- Инициализация нового функционала ---
 // 1. Создаем экземпляр логгера
@@ -419,6 +428,33 @@ export const scenarioEngine = new ScenarioEngine();
 // 3. Регистрируем тестовый сценарий
 scenarioEngine.registerScenario(testCountdownScenario);
 scenarioEngine.registerScenario(parseRecommendationScenario);
+
+// --- Инициализация IndexManager ---
+// Вызывается один раз при запуске background script
+async function initializeBackgroundState() {
+    logger.info("🚀 Background service worker запущен и готов к работе.", { module: 'Background' });
+
+    try {
+        // 1. Инициализируем IndexManager данными из tableAdapter
+        logger.info("🔄 Инициализация IndexManager...", { module: 'Background' });
+        const allStoredData = await tableAdapter.getAll();
+        await initIndexManager(allStoredData);
+        logger.info(`✅ IndexManager инициализирован. Загружено ${allStoredData.length} записей.`, { module: 'Background' });
+
+        // 2. Можно инициализировать другие части системы...
+
+    } catch (initErr) {
+        logger.error(`❌ Ошибка инициализации background: ${initErr.message}`, { module: 'Background' });
+        // Важно: не останавливаем весь background из-за ошибки инициализации
+        // но логируем критично
+    }
+}
+
+// Вызываем инициализацию
+initializeBackgroundState().catch(err => {
+    console.error("[Background] Критическая ошибка при инициализации:", err);
+    // logger может быть еще не инициализирован, поэтому console.error тоже важен
+});
 // --- Конец инициализации нового функционала ---
 
 // --- Обработка сообщений от popup ---
@@ -512,11 +548,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         (async () => {
             try {
                 let activeTabId = null;
+                logger.debug("Попытка получить активную вкладку...", { module: 'Background' });
+
                 try {
-                    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-                    activeTabId = activeTab?.id || null;
-                } catch (e) {
-                    logger.warn("Не удалось получить активную вкладку для сценария", { module: 'Background' });
+                    // Попытка 1: Получить активную вкладку в текущем окне
+                    const activeTabsCurrentWindow = await chrome.tabs.query({ active: true, currentWindow: true });
+                    logger.debug(`Результат query({active: true, currentWindow: true}):`, activeTabsCurrentWindow, { module: 'Background' });
+                    if (activeTabsCurrentWindow.length > 0) {
+                        activeTabId = activeTabsCurrentWindow[0].id;
+                        logger.debug(`Найдена активная вкладка в текущем окне: ID=${activeTabId}`, { module: 'Background' });
+                    } else {
+                        logger.warn("Активная вкладка в текущем окне не найдена.", { module: 'Background' });
+                    }
+                } catch (queryErr1) {
+                    logger.warn(`Ошибка при попытке 1 получения активной вкладки: ${queryErr1.message}`, { module: 'Background' });
+                }
+
+                // Если не нашли, попробуем более общий запрос
+                if (activeTabId === null) {
+                    logger.debug("Попытка 2: Получить любую активную вкладку...", { module: 'Background' });
+                    try {
+                        const activeTabsAnyWindow = await chrome.tabs.query({ active: true });
+                        logger.debug(`Результат query({active: true}):`, activeTabsAnyWindow, { module: 'Background' });
+                        if (activeTabsAnyWindow.length > 0) {
+                            // Берем первую, обычно это та, что в текущем окне
+                            activeTabId = activeTabsAnyWindow[0].id;
+                            logger.debug(`Найдена активная вкладка (любая): ID=${activeTabId}`, { module: 'Background' });
+                        } else {
+                            logger.warn("Не найдено ни одной активной вкладки.", { module: 'Background' });
+                        }
+                    } catch (queryErr2) {
+                        logger.warn(`Ошибка при попытке 2 получения активной вкладки: ${queryErr2.message}`, { module: 'Background' });
+                    }
+                }
+
+                // Если все еще null, логируем предупреждение, но продолжаем (сценарий может сам решить, что делать)
+                if (activeTabId === null) {
+                    logger.warn("❌ Не удалось получить активную вкладку. tabId будет null. Сценарий может не работать с контентом страницы.", { module: 'Background' });
+                    // Не бросаем ошибку здесь, пусть сценарий сам решает, критично ли это.
+                    // Но для скроллинга это критично, поэтому сценарий должен это обработать.
+                } else {
+                    logger.info(`✅ Активная вкладка определена: ID=${activeTabId}`, { module: 'Background' });
                 }
 
                 // Определяем, какой сценарий запускать
@@ -531,15 +603,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     throw new Error(`Неизвестный ID сценария: ${scenarioId}`);
                 }
 
-                // Передаем параметры в сценарий через context.params
+                // Передаем параметры и tabId в сценарий через context.params и context.tabId
                 const instanceId = await scenarioEngine.run(scenarioToRun, params, activeTabId);
                 logger.info(`🏁 Сценарий "${scenarioId}" запущен с ID: ${instanceId}`, { module: 'Background' });
 
-                // 👇 Отправляем подтверждение запуска с ID инстанса
                 sendResponse({ status: "started", instanceId: instanceId });
-
-                // Опционально: отправляем сообщение в popup о начале (если нужно немедленное уведомление до завершения сценария)
-                // chrome.runtime.sendMessage({ type: "scenarioStatus", status: "started", message: `Сценарий "${scenarioId}" начат.`, level: "info" });
 
             } catch (err) {
                 logger.error(`❌ Ошибка запуска сценария "${scenarioId}": ${err.message}`, { module: 'Background' });
@@ -620,51 +688,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             try {
                 if (!request.data || !Array.isArray(request.data)) {
                     const errorMsg = "Некорректные данные для импорта";
-                    console.error("[Background] importTableData:", errorMsg);
+                    logger.warn(`[Background] ${errorMsg}`, { module: 'Background' });
                     sendResponse({ status: "error", message: errorMsg });
                     return;
                 }
 
                 const dataToImport = request.data;
+                logger.info(`📥 Начинаем импорт ${dataToImport.length} записей...`, { module: 'Background' });
 
-                // 1. Получаем существующие данные
-                let existingData = [];
-                try {
-                    existingData = await tableAdapter.getAll();
-                } catch (getErr) {
-                    console.warn("[Background] Не удалось получить существующие данные, начинаем с пустого массива:", getErr.message);
-                }
-
-                // 2. Объединяем данные (можно просто добавить, или реализовать объединение/замещение)
-                // Для простоты, просто добавляем в конец.
-                const combinedData = [...existingData, ...dataToImport];
-
-                // 3. Сохраняем в хранилище через адаптер
-                // tableAdapter.addBatch ожидает массив VideoData. Убедимся, что формат правильный.
-                // addBatch внутри адаптера тоже вызывает getAll, добавляет и set.
-                // Чтобы упростить и избежать двойного getAll, можно напрямую использовать set,
-                // но лучше использовать API адаптера. Реализуем addBatch, если его нет.
-                // Проверим, есть ли addBatch:
+                // 1. Добавляем данные в tableAdapter (основное хранилище)
+                // Предполагается, что tableAdapter.addBatch существует и работает
                 if (typeof tableAdapter.addBatch === 'function') {
                     await tableAdapter.addBatch(dataToImport);
                 } else if (typeof tableAdapter.add === 'function') {
                     // Если addBatch нет, добавляем по одной (менее эффективно)
+                    logger.warn("[Background] tableAdapter.addBatch не найден, используем add для каждой записи...", { module: 'Background' });
                     for (const item of dataToImport) {
                         await tableAdapter.add(item);
                     }
                 } else {
-                    const errorMsg = "Адаптер таблицы не поддерживает методы добавления";
-                    console.error("[Background] importTableData:", errorMsg);
-                    sendResponse({ status: "error", message: errorMsg });
-                    return;
+                    throw new Error("Адаптер таблицы не поддерживает методы добавления (add/addBatch)");
                 }
 
-                logger.info(`📥 Импортировано ${dataToImport.length} записей в таблицу`, { module: 'Background' });
+                logger.info(`✅ Импортировано ${dataToImport.length} записей в tableAdapter`, { module: 'Background' });
+
+                // 👇 НОВОЕ: Обновляем IndexManager импортированными данными
+                try {
+                    logger.info(`🔄 Обновление IndexManager ${dataToImport.length} импортированными записями...`, { module: 'Background' });
+                    updateIndexManagerWithData(dataToImport); // Вызываем функцию из IndexManager
+                    logger.info(`✅ IndexManager успешно обновлен импортированными данными.`, { module: 'Background' });
+                } catch (indexUpdateErr) {
+                    // Логируем ошибку, но не прерываем основной процесс импорта
+                    logger.error(`⚠️ Ошибка обновления IndexManager после импорта: ${indexUpdateErr.message}`, { module: 'Background' });
+                }
 
                 sendResponse({ status: "success", count: dataToImport.length });
 
+                // 👇 НОВОЕ: Оповещаем popup о том, что данные обновились (если нужно)
+                // Это может быть полезно, если popup хочет обновить таблицу или индексы
+                // chrome.runtime.sendMessage({ type: "dataUpdated" }).catch(err => { /* ignore */ });
+
             } catch (err) {
-                console.error("[Background] Ошибка при импорте данных:", err);
                 logger.error(`❌ Ошибка импорта данных: ${err.message}`, { module: 'Background' });
                 sendResponse({ status: "error", message: err.message });
             }
@@ -746,6 +810,67 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // 👇 НОВОЕ: Обработчик для сброса индексов
+    if (request.action === "resetIndices") {
+        (async () => {
+            try {
+                logger.info("📥 Получена команда на сброс индексов.", { module: 'Background' });
+                resetIndexManager();
+                logger.info("✅ Индексы успешно сброшены.", { module: 'Background' });
+                sendResponse({ status: "success", message: "Индексы сброшены." });
+            } catch (err) {
+                logger.error(`❌ Ошибка сброса индексов: ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
+    // 👇 НОВОЕ: Обработчик для получения состояния индексов (для отладки/статистики в popup)
+    if (request.action === "getIndexState") {
+        (async () => {
+            try {
+                // logger.info("📥 Получен запрос состояния индексов.", { module: 'Background' });
+                // getStateSnapshot возвращает копии, безопасно для сериализации
+                const indexStateSnapshot = getStateSnapshot();
+
+                // Maps и Sets нужно преобразовать для отправки через sendMessage
+                // ВАЖНО: Создаем объект с полями, которые ожидает popup
+                const serializableState = {
+                    // Поля для scrapedDataBuffer
+                    scrapedDataBuffer_count: indexStateSnapshot.scrapedDataBuffer.length,
+                    // 👇 НОВОЕ: Отправляем сами данные буфера (или часть)
+                    scrapedDataBuffer_sample: indexStateSnapshot.scrapedDataBuffer, // Отправляем первые 5 элементов
+
+                    // Поля для visitedVideoIds
+                    visitedVideoIds_count: indexStateSnapshot.visitedVideoIds.size,
+                    // 👇 НОВОЕ: Отправляем сами ID (или часть)
+                    visitedVideoIds_sample: Array.from(indexStateSnapshot.visitedVideoIds), // Отправляем первые 10 ID
+
+                    // Поля для channelVideoCounts
+                    channelVideoCounts_count: indexStateSnapshot.channelVideoCounts.size,
+                    // 👇 НОВОЕ: Отправляем часть словаря
+                    channelVideoCounts_sample: Object.fromEntries(
+                        Array.from(indexStateSnapshot.channelVideoCounts) // Первые 10 каналов
+                    ),
+
+                    // Поля для channelToVideoIds
+                    channelToVideoIds_count: indexStateSnapshot.channelToVideoIds.size,
+                    // 👇 НОВОЕ: Отправляем часть словаря, преобразуя Set в Array
+                    channelToVideoIds_sample: Object.fromEntries(
+                        Array.from(indexStateSnapshot.channelToVideoIds, ([k, v]) => [k, Array.from(v)])
+                    ),
+                };
+
+                sendResponse({ status: "success", serializableState });
+            } catch (err) {
+                logger.error(`❌ Ошибка получения состояния индексов: ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
     // TODO: Здесь будут обработчики для других действий (parseOnce, startAutoAnalysis и т.д.)
     // которые мы постепенно перенесем на новую архитектуру.
     // Пока оставим заглушку или старую логику, если нужно проверить MVP.
@@ -786,10 +911,461 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    // --- Обработчики для парсинга и скрапинга ---
+    if (request.action === "parseAndHighlight") {
+        console.log("[Content Script] === Получен запрос на парсинг, подсветку и скрапинг ===");
+        const { sourceVideoId = 'unknown' } = request; // Ожидаем sourceVideoId от background
+        console.log("[Content Script] Используем sourceVideoId:", sourceVideoId);
+
+        try {
+            // 1. Найти и подсветить карточки
+            const parsedCardElements = window.ytParser.parseAndHighlight(); // Это HTMLElement[]
+            const count = parsedCardElements.length;
+            console.log(`[Content Script] Найдено и подсвечено карточек: ${count}`);
+
+            // 2. Извлечь данные из подсвеченных карточек
+            // Передаем массив элементов и sourceVideoId в scraper
+            const scrapedData = window.ytScraper.scrapeCards(parsedCardElements, sourceVideoId);
+            console.log(`[Content Script] Извлечено данных из ${scrapedData.length} карточек.`);
+
+            // 3. Вернуть данные
+            sendResponse({
+                status: "success",
+                highlightedCount: count,
+                scrapedData: scrapedData // Возвращаем сразу извлеченные данные
+            });
+            console.log("[Content Script] === Данные успешно отправлены ===");
+
+        } catch (err) {
+            console.error("[Content Script] Ошибка парсинга/скрапинга:", err);
+            sendResponse({
+                status: "error",
+                message: err.message,
+                // Даже при ошибке можем вернуть то, что успели найти
+                highlightedCount: 0,
+                scrapedData: []
+            });
+        }
+        return true; // keep channel open for async response
+    }
+
+    // --- Обработчики для управления подсветкой ---
+    if (request.action === "removeParserHighlights") {
+        console.log("[Content Script] Получен запрос на удаление подсветки.");
+        try {
+            window.ytParser.removeHighlights();
+            sendResponse({ status: "success" });
+        } catch (err) {
+            console.error("[Content Script] Ошибка удаления подсветки:", err);
+            sendResponse({ status: "error", message: err.message });
+        }
+        return true;
+    }
+
+    if (request.action === "requestCardDetails") {
+        console.log(`[Content Script] Получен запрос на данные по ${request.count} карточкам.`);
+        try {
+            // 1. Найти все подсвеченные карточки
+            const highlightedCards = document.querySelectorAll('.video-highlighted');
+            console.log(`[Content Script] Найдено подсвеченных карточек: ${highlightedCards.length}`);
+
+            // 2. Извлечь данные из каждой
+            const cardDetails = [];
+            highlightedCards.forEach((cardElement, index) => {
+                try {
+                    // --- Логика извлечения данных, аналогичная core/scraper.js ---
+                    // 1. Название видео
+                    const titleElement = cardElement.querySelector('.yt-lockup-metadata-view-model__title');
+                    const title = titleElement?.textContent?.trim() || 'Без названия';
+
+                    // 2. ID видео из ссылки
+                    const linkElement = cardElement.querySelector('a[href*="/watch?v="]');
+                    let videoId = 'Не найден';
+                    if (linkElement) {
+                        try {
+                            const url = new URL(linkElement.href);
+                            videoId = url.searchParams.get('v') || 'Не удалось извлечь ID';
+                        } catch (urlErr) {
+                            console.warn(`[Content Script] Ошибка разбора URL для карточки ${index}:`, urlErr);
+                        }
+                    }
+
+                    // 3. Количество просмотров
+                    const viewsElement = cardElement.querySelector('.yt-lockup-metadata-view-model__byline-item');
+                    const views = viewsElement?.textContent?.trim() || 'N/A';
+
+                    // 4. Название канала
+                    const channelElement = cardElement.querySelector('.yt-lockup-metadata-view-model__secondary-title');
+                    const channelName = channelElement?.textContent?.trim() || 'N/A';
+
+                    // 5. URL миниатюры (если нужно)
+                    const thumbImg = cardElement.querySelector('img');
+                    const thumbnailUrl = thumbImg?.src || 'N/A';
+
+                    cardDetails.push({
+                        videoId,
+                        title,
+                        views,
+                        channelName,
+                        thumbnailUrl
+                        // Можно добавить больше полей при необходимости
+                    });
+                    console.log(`[Content Script] Данные извлечены для карточки ${index + 1}: ${title.substring(0, 30)}...`);
+                } catch (scrapeErr) {
+                    console.error(`[Content Script] Ошибка извлечения данных для карточки ${index}:`, scrapeErr);
+                    // Добавляем карточку с ошибкой, чтобы сохранить порядок
+                    cardDetails.push({
+                        videoId: 'Ошибка извлечения',
+                        title: `Ошибка: ${scrapeErr.message.substring(0, 50)}`,
+                        views: 'N/A',
+                        channelName: 'N/A',
+                        thumbnailUrl: 'N/A'
+                    });
+                }
+            });
+
+            console.log(`[Content Script] Собрано данных по ${cardDetails.length} карточкам.`);
+            sendResponse({
+                status: "success",
+                cardDetails: cardDetails
+            });
+        } catch (err) {
+            console.error("[Content Script] Ошибка при сборе данных о карточках:", err);
+            sendResponse({ status: "error", message: err.message });
+        }
+        return true; // keep channel open for async response
+    }
+
+    if (request.action === "checkVideoAvailability") {
+        console.log("[Content Script] Получен запрос на проверку доступности видео.");
+        (async () => {
+            try {
+                // Вызываем функцию из модуля video-checker
+                const isAvailable = window.ytVideoChecker.isCurrentVideoAvailable();
+                console.log(`[Content Script] Видео ${isAvailable ? 'доступно' : 'недоступно'}.`);
+                sendResponse({ status: "success", isAvailable: isAvailable });
+            } catch (err) {
+                console.error("[Content Script] Ошибка проверки доступности видео:", err);
+                sendResponse({ status: "error", message: err.message, isAvailable: true }); // В случае ошибки считаем доступным
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
+
     console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });
 
 === END FILE: D:\разработка\youtube-parser-os\content\content.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\content\modules\parser.js ===
+
+// content/modules/parser.js
+
+/**
+ * Возвращает все карточки видео, исключая плейлисты и коллекции.
+ * Использует селекторы из старой, проверенной версии.
+ * @returns {HTMLElement[]}
+ */
+function getVideoCards() {
+    console.log("[Content Module Parser] Поиск карточек видео...");
+    // Используем селектор из старого рабочего кода
+    const allPotentialCards = Array.from(document.querySelectorAll('.yt-lockup-view-model'));
+    console.log(`[Content Module Parser] Найдено потенциальных карточек до фильтрации: ${allPotentialCards.length}`);
+
+    const filteredCards = allPotentialCards.filter(el => {
+        // Фильтруем по тем же критериям
+        const isCollectionStack2 = el.classList.contains('yt-lockup-view-model--collection-stack-2');
+        const isCollection = el.classList.contains('yt-lockup-view-model--collection');
+        const hasCollectionThumbnail = !!el.querySelector('yt-collection-thumbnail-view-model');
+        const hasCollectionsStack = !!el.querySelector('yt-collections-stack');
+        const isPlaylist = el.querySelector('a[href*="/watch"]')?.href.includes('list=');
+
+        const shouldBeExcluded = isCollectionStack2 || isCollection || hasCollectionThumbnail || hasCollectionsStack || isPlaylist;
+
+        // Для отладки, выведем информацию о том, что именно фильтруется
+        // if (shouldBeExcluded) {
+        //     console.log("[Content Module Parser] Исключена карточка:", { isCollectionStack2, isCollection, hasCollectionThumbnail, hasCollectionsStack, isPlaylist });
+        // }
+
+        return !shouldBeExcluded;
+    });
+
+    console.log(`[Content Module Parser] Найдено карточек видео после фильтрации: ${filteredCards.length}`);
+    return filteredCards;
+}
+
+/**
+ * Проверяет, подсвечена ли карточка или её родитель.
+ * @param {HTMLElement} el
+ * @returns {boolean}
+ */
+function isAlreadyHighlightedOrHasHighlightedParent(el) {
+    if (el.classList.contains('video-highlighted')) return true;
+    let parent = el.parentElement;
+    while (parent) {
+        if (parent.classList?.contains('video-highlighted')) return true;
+        parent = parent.parentElement;
+    }
+    return false;
+}
+
+/**
+ * Добавляет визуальную подсветку к элементу.
+ * @param {HTMLElement} el
+ */
+function highlightElement(el) {
+    // Проверка, не подсвечен ли уже элемент или его родитель
+    if (isAlreadyHighlightedOrHasHighlightedParent(el)) {
+        console.log("[Content Module Parser] Элемент уже подсвечен или находится внутри подсвеченного родителя, пропускаем.");
+        return;
+    }
+
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+        position: 'absolute',
+        border: '3px solid #ff4d4d', // Используем тот же стиль, что и раньше
+        pointerEvents: 'none',
+        zIndex: '999999',
+        borderRadius: '8px',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        boxShadow: '0 0 8px rgba(255, 77, 77, 0.6)',
+        boxSizing: 'border-box' // Добавляем для корректного размера рамки
+    });
+
+    // Убедиться, что контейнер имеет position для Absolute потомка
+    const computedStyle = window.getComputedStyle(el);
+    if (!computedStyle.position || computedStyle.position === 'static') {
+        el.style.position = 'relative';
+    }
+    el.style.overflow = 'visible'; // Чтобы подсветка не обрезалась
+
+    el.appendChild(box);
+    el.classList.add('video-highlighted'); // Используем тот же класс
+    console.log("[Content Module Parser] Элемент подсвечен.");
+}
+
+/**
+ * Подсвечивает переданные карточки.
+ * @param {HTMLElement[]} cards
+ */
+function highlightVideoCards(cards) {
+    console.log(`[Content Module Parser] Начинаем подсвечивать ${cards.length} карточек...`);
+    let highlightedCount = 0;
+    cards.forEach(el => {
+        try {
+            highlightElement(el);
+            highlightedCount++;
+        } catch (err) {
+            console.warn("[Content Module Parser] Ошибка при подсветке элемента:", err);
+            // Не прерываем весь процесс из-за одной ошибки
+        }
+    });
+    console.log(`[Content Module Parser] Успешно подсвечено карточек: ${highlightedCount}`);
+}
+
+/**
+ * Находит и подсвечивает карточки видео на странице YouTube.
+ * Возвращает массив найденных DOM-элементов, как требует логика.
+ * @returns {HTMLElement[]} массив DOM-элементов карточек
+ */
+function parseAndHighlightVideoCards() {
+    console.log("[Content Module Parser] === Начинаем парсинг и подсветку видео ===");
+
+    // 1. Найти все подходящие карточки
+    const cards = getVideoCards();
+    console.log(`[Content Module Parser] Найдено карточек для подсветки: ${cards.length}`);
+
+    // Для отладки: выведем первые несколько элементов
+    console.log("[Content Module Parser] Первые 3 найденных элемента:", cards.slice(0, 3));
+
+    // 2. Подсветить их
+    highlightVideoCards(cards);
+
+    console.log(`[Content Module Parser] === Парсинг и подсветка завершены. Возвращено элементов: ${cards.length} ===`);
+    // 3. Вернуть массив найденных и подсвеченных элементов
+    return cards;
+}
+
+/**
+ * Удаляет подсветку, добавленную parseAndHighlightVideoCards.
+ */
+function removeParserHighlights() {
+    console.log("[Content Module Parser] Удаление подсветки...");
+    const highlightedCards = document.querySelectorAll('.video-highlighted');
+    let removedCount = 0;
+    highlightedCards.forEach(card => {
+        // Удаляем только наш элемент подсветки (рамку)
+        // Ищем div с характерными стилями
+        const highlightBoxes = card.querySelectorAll('div[style*="border: 3px solid"]');
+        highlightBoxes.forEach(box => {
+            box.remove();
+            removedCount++;
+        });
+        card.classList.remove('video-highlighted');
+    });
+    console.log(`[Content Module Parser] Удалено ${removedCount} элементов подсветки из ${highlightedCards.length} подсвеченных карточек.`);
+}
+
+// Экспортируем функции в глобальную область видимости
+window.ytParser = {
+    parseAndHighlight: parseAndHighlightVideoCards,
+    removeHighlights: removeParserHighlights,
+    // Для отладки можно экспортировать и вспомогательные функции
+    getVideoCards: getVideoCards
+};
+
+console.log("[Content Module Parser] Модуль загружен и готов.");
+
+=== END FILE: D:\разработка\youtube-parser-os\content\modules\parser.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\content\modules\scraper.js ===
+
+// content/modules/scraper.js
+
+/**
+ * Извлекает данные из массива DOM-элементов карточек.
+ * @param {HTMLElement[]} cardElements - массив DOM-элементов карточек (уже подсвеченных).
+ * @param {string} sourceVideoId - ID видео, с которого был совершен переход (текущее видео).
+ * @returns {Array<Object>} массив объектов с данными.
+ *   Каждый объект содержит: title, videoId, views, channelName, sourceVideoId, thumbnailUrl.
+ */
+function scrapeCardsFromElements(cardElements, sourceVideoId = 'unknown') {
+    console.log(`[Content Module Scraper] Начинаем скрапинг данных из ${cardElements.length} карточек...`);
+    const scrapedData = [];
+
+    cardElements.forEach((el, index) => {
+        try {
+            // --- Извлечение данных из элемента `el` ---
+            // Структура HTML может немного отличаться, поэтому селекторы могут потребовать корректировки.
+
+            // 1. Название видео
+            // Оригинал: .yt-lockup-metadata-view-model__title
+            // Новый вариант (на основе предоставленного HTML):
+            const titleElement = el.querySelector('h3.yt-lockup-metadata-view-model__heading-reset a.yt-lockup-metadata-view-model__title');
+            // Альтернатива, если предыдущая не сработала:
+            // const titleElement = el.querySelector('.yt-lockup-metadata-view-model__title');
+            const title = titleElement?.textContent?.trim() || 'Без названия';
+
+            // 2. ID видео из ссылки
+            let videoId = 'Не найден';
+            // const linkElement = el.querySelector('a[href*="/watch?v="]');
+            // Более общий селектор для ссылки на видео внутри карточки
+            const linkElement = el.querySelector('a[href^="/watch?v="]');
+            if (linkElement) {
+                try {
+                    const url = new URL(linkElement.href, window.location.origin);
+                    videoId = url.searchParams.get('v') || 'Не найден';
+                } catch (e) {
+                    console.warn(`[Content Module Scraper] Ошибка парсинга URL для карточки ${index}:`, e);
+                }
+            }
+
+            // 3. Количество просмотров
+            let views = 'Неизвестно';
+            // Ищем строку метаданных, которая содержит информацию о просмотрах
+            const metadataRows = el.querySelectorAll('.yt-content-metadata-view-model__metadata-row');
+            for (const row of metadataRows) {
+                const rowText = row.textContent || '';
+                // Проверяем на наличие просмотров (английский и русский), игнорируя дату после "•"
+                // Пример: "21M views • 5 days ago" -> "21M views"
+                if (/\b\d+([\.,]?\d+)*\s*[KMBkmb]?\.?\s*(views?|просмотра?|просмотров)/i.test(rowText)) {
+                    // Берем текст до первого "•" и убираем лишнее
+                    const viewsPart = rowText.split('•')[0].trim();
+                    views = viewsPart;
+                    break; // Нашли, выходим
+                }
+            }
+
+            // 4. Название канала
+            let channelName = 'Неизвестен';
+            // В предоставленном HTML канал находится внутри .yt-content-metadata-view-model__metadata-row
+            // и выглядит как: ... ChessMaster <иконка верификации> ...
+            // Нужно найти span/text непосредственно перед или после иконки, или просто текст до разделителя.
+            const channelMetadataRow = Array.from(metadataRows).find(row =>
+                row.querySelector('span.yt-core-attributed-string--link-inherit-color') &&
+                !row.querySelector('span.yt-content-metadata-view-model__delimiter') // Исключаем строку с датой
+            );
+
+            if (channelMetadataRow) {
+                // Берем первый span с именем канала
+                const channelSpan = channelMetadataRow.querySelector('span.yt-core-attributed-string--link-inherit-color');
+                if (channelSpan) {
+                    // Убираем иконку верификации, если она внутри
+                    const verifiedIcon = channelSpan.querySelector('.ytIconWrapperHost');
+                    if (verifiedIcon) {
+                        verifiedIcon.remove(); // Временно удаляем, чтобы не мешала textContent
+                    }
+                    channelName = channelSpan.textContent?.trim() || 'Неизвестен';
+                    if (verifiedIcon) {
+                        channelSpan.appendChild(verifiedIcon); // Возвращаем иконку на место
+                    }
+                } else {
+                    // Если span не найден, берем весь текст строки и пытаемся извлечь имя
+                    const fullText = channelMetadataRow.textContent || '';
+                    // Простая эвристика: имя канала до первого "•"
+                    const parts = fullText.split('•');
+                    channelName = parts[0]?.trim() || 'Неизвестен';
+                }
+            }
+
+            // 5. Thumbnail URL
+            let thumbnailUrl = '';
+            const thumbnailImg = el.querySelector('yt-thumbnail-view-model img.ytCoreImageHost');
+            if (thumbnailImg && thumbnailImg.src) {
+                thumbnailUrl = thumbnailImg.src;
+            }
+
+            // --- Сборка объекта данных ---
+            const scrapedItem = {
+                title,
+                videoId,
+                views,
+                channelName,
+                sourceVideoId, // Передается извне
+                thumbnailUrl
+            };
+
+            scrapedData.push(scrapedItem);
+            // Для отладки, можно логировать первые N элементов
+            // if (index < 3) {
+            //     console.log(`[Content Module Scraper] Данные из карточки ${index + 1}:`, scrapedItem);
+            // }
+
+        } catch (err) {
+            console.error(`[Content Module Scraper] Ошибка при скрапинге карточки ${index}:`, err);
+            // Добавляем запись об ошибке, чтобы не терять счет
+            scrapedData.push({
+                title: `Ошибка скрапинга ${index}`,
+                videoId: '',
+                views: '',
+                channelName: '',
+                sourceVideoId: sourceVideoId,
+                thumbnailUrl: '',
+                _scrapeError: err.message // Доп. поле для отладки
+            });
+        }
+    });
+
+    console.log(`[Content Module Scraper] Скрапинг завершён. Извлечено данных: ${scrapedData.length}`);
+    return scrapedData;
+}
+
+// Экспортируем функцию в глобальную область видимости
+window.ytScraper = {
+    scrapeCards: scrapeCardsFromElements
+};
+
+console.log("[Content Module Scraper] Модуль загружен и готов.");
+
+=== END FILE: D:\разработка\youtube-parser-os\content\modules\scraper.js ===
 
 --------------------------------------------------------------------------------
 
@@ -822,6 +1398,89 @@ window.performSingleScroll = performSingleScroll;
 console.log("[Content Module Scroller] Модуль загружен и готов.");
 
 === END FILE: D:\разработка\youtube-parser-os\content\modules\scroller.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\content\modules\video-checker.js ===
+
+// content/modules/video-checker.js
+
+/**
+ * Проверяет, доступно ли текущее видео на странице YouTube.
+ * Выполняется в контексте content script.
+ * @returns {Promise<boolean>} true, если видео доступно, false - если недоступно или не на странице видео.
+ */
+function isCurrentVideoAvailable() {
+    console.log("[Content Module VideoChecker] Начало проверки доступности видео.");
+
+    try {
+        // 1. Проверяем URL - часто недоступные видео имеют специальный URL
+        if (window.location.pathname === '/unavailable') {
+            console.log("[Content Module VideoChecker] Обнаружен URL /unavailable.");
+            return false;
+        }
+
+        // 2. Ищем основной элемент плеера или контейнер видео
+        const playerElement = document.querySelector('#player, ytd-watch-flexy');
+        if (!playerElement) {
+            console.log("[Content Module VideoChecker] Не найден основной элемент плеера или watch-flexy.");
+            // Это может быть не страница видео, но мы проверяем дальше
+        }
+
+        // 3. Ищем специфичный элемент-индикатор недоступности
+        // На основе предоставленного HTML
+        const promoRenderer = document.querySelector('ytd-background-promo-renderer');
+        if (promoRenderer) {
+            const titleElement = promoRenderer.querySelector('.promo-title');
+            const titleText = titleElement?.textContent?.trim().toLowerCase() || '';
+
+            const bodyTextElement = promoRenderer.querySelector('.promo-body-text');
+            const bodyText = bodyTextElement?.textContent?.trim().toLowerCase() || '';
+
+            // Список известных фраз недоступности
+            const unavailableIndicators = [
+                'video unavailable',
+                'this video is private',
+                'this video is unavailable',
+                'this video has been removed',
+                'video заблокирован',
+                'видео удалено',
+                'видео недоступно'
+                // Можно добавить больше на других языках
+            ];
+
+            const isUnavailableTitle = unavailableIndicators.some(phrase => titleText.includes(phrase.toLowerCase()));
+            const isUnavailableBody = unavailableIndicators.some(phrase => bodyText.includes(phrase.toLowerCase()));
+
+            if (isUnavailableTitle || isUnavailableBody) {
+                console.log(`[Content Module VideoChecker] Найдена плашка недоступности. Заголовок: '${titleText}', Тело: '${bodyText}'`);
+                return false;
+            }
+        }
+
+        // 4. Проверяем наличие сообщений об ограничениях (например, возрастные ограничения)
+        // Это более сложная проверка, оставим на потом или если потребуется
+
+        // 5. Если не найдены явные признаки недоступности, считаем видео доступным
+        // (или на другой странице, но это не ошибка "недоступности")
+        console.log("[Content Module VideoChecker] Признаки недоступности видео не найдены. Считаем доступным.");
+        return true;
+
+    } catch (err) {
+        console.error("[Content Module VideoChecker] Ошибка при проверке доступности видео:", err);
+        // В случае ошибки проверки, лучше считать видео доступным, чтобы не блокировать работу
+        return true;
+    }
+}
+
+// Экспортируем функцию в глобальную область видимости для вызова из content.js
+window.ytVideoChecker = {
+    isCurrentVideoAvailable: isCurrentVideoAvailable
+};
+
+console.log("[Content Module VideoChecker] Модуль загружен и готов.");
+
+=== END FILE: D:\разработка\youtube-parser-os\content\modules\video-checker.js ===
 
 --------------------------------------------------------------------------------
 
@@ -892,6 +1551,212 @@ export function prepareImportedDataIndices(videoDataArray) {
 }
 
 === END FILE: D:\разработка\youtube-parser-os\core\data-processor.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\core\index-manager.js ===
+
+// core/index-manager.js
+
+/**
+ * Менеджер индексов для отслеживания состояния парсинга.
+ * Управляет visitedVideoIds, channelVideoCounts, channelToVideoIds и scrapedData.
+ */
+
+// --- 1. Состояние (в памяти background.js) ---
+/** @type {Set<string>} - Множество ID видео, на которые мы уже заходили (sourceVideoId). */
+let visitedVideoIds = new Set();
+
+/** @type {Map<string, number>} - Словарь: канал -> количество видео из этого канала. */
+let channelVideoCounts = new Map();
+
+/** @type {Map<string, Set<string>>} - Словарь: канал -> множество ID видео этого канала. */
+let channelToVideoIds = new Map();
+
+/** @type {Array<Object>} - Массив данных, извлеченных в ходе последнего парсинга. */
+let scrapedDataBuffer = [];
+
+// --- 2. API для работы с индексами ---
+
+/**
+ * Инициализирует индексы, опционально на основе начальных данных.
+ * @param {Array<Object>} [initialData=[]] - Массив объектов видео (например, из tableAdapter.getAll()).
+ * @returns {Promise<void>}
+ */
+export async function initialize(initialData = []) {
+    console.log("[IndexManager] Инициализация индексов...");
+    reset(); // Очищаем текущее состояние
+
+    if (!Array.isArray(initialData) || initialData.length === 0) {
+        console.log("[IndexManager] Нет начальных данных для инициализации индексов.");
+        return;
+    }
+
+    console.log(`[IndexManager] Начинаем построение индексов из ${initialData.length} записей...`);
+    let processedCount = 0;
+
+    for (const video of initialData) {
+        // --- visitedVideoIds: ID видео, на которые мы заходили (sourceVideoId) ---
+        // Предполагаем, что если запись есть, то на это video.sourceVideoId мы уже заходили.
+        if (video.sourceVideoId) {
+            visitedVideoIds.add(video.sourceVideoId);
+        }
+
+        // --- channelVideoCounts: канал -> количество видео ---
+        const channel = video.channelName || 'Неизвестный канал';
+        const currentCount = channelVideoCounts.get(channel) || 0;
+        channelVideoCounts.set(channel, currentCount + 1);
+
+        // --- channelToVideoIds: канал -> множество ID видео ---
+        if (!channelToVideoIds.has(channel)) {
+            channelToVideoIds.set(channel, new Set());
+        }
+        if (video.videoId) {
+            channelToVideoIds.get(channel).add(video.videoId);
+        }
+
+        processedCount++;
+    }
+
+    console.log(`[IndexManager] Индексы инициализированы. Обработано записей: ${processedCount}`);
+    console.log(`[IndexManager] visitedVideoIds.size: ${visitedVideoIds.size}`);
+    console.log(`[IndexManager] channelVideoCounts.size: ${channelVideoCounts.size}`);
+    console.log(`[IndexManager] channelToVideoIds.size: ${channelToVideoIds.size}`);
+}
+
+/**
+ * Сбрасывает все индексы и буфер в начальное состояние.
+ */
+export function reset() {
+    console.log("[IndexManager] Сброс всех индексов и буфера.");
+    visitedVideoIds.clear();
+    channelVideoCounts.clear();
+    channelToVideoIds.clear();
+    scrapedDataBuffer = [];
+    console.log("[IndexManager] Все индексы и буфер сброшены.");
+}
+
+/**
+ * Добавляет новые данные в индексы и буфер.
+ * @param {Array<Object>} newScrapedData - Массив новых объектов данных видео.
+ */
+export function addScrapedData(newScrapedData) {
+    if (!Array.isArray(newScrapedData) || newScrapedData.length === 0) {
+        console.warn("[IndexManager] addScrapedData: Получен пустой или некорректный массив данных.");
+        return;
+    }
+
+    console.log(`[IndexManager] Добавление ${newScrapedData.length} новых записей в индексы и буфер.`);
+
+    // 1. Добавляем в буфер
+    scrapedDataBuffer.push(...newScrapedData);
+
+    // 2. Обновляем индексы
+    for (const video of newScrapedData) {
+        // visitedVideoIds обновляется, если sourceVideoId является "посещенным"
+        // Но в данном случае sourceVideoId - это видео, С КОТОРОГО мы пришли.
+        // visitedVideoIds - это скорее ID видео, которые мы ПАРСИЛИ как источник.
+        // Если мы хотим отслеживать, какие исходные видео мы уже обработали,
+        // то sourceVideoId добавляется в visitedVideoIds.
+        // Если мы хотим отслеживать, какие видео мы УЖЕ НАШЛИ (и не должны добавлять снова),
+        // то videoId добавляется в отдельный индекс.
+        // Для MVP: visitedVideoIds отслеживает sourceVideoId (откуда пришли).
+        if (video.sourceVideoId) {
+            visitedVideoIds.add(video.sourceVideoId);
+        }
+
+        // channelVideoCounts и channelToVideoIds обновляются для найденных видео
+        const channel = video.channelName || 'Неизвестный канал';
+        const currentCount = channelVideoCounts.get(channel) || 0;
+        channelVideoCounts.set(channel, currentCount + 1);
+
+        if (!channelToVideoIds.has(channel)) {
+            channelToVideoIds.set(channel, new Set());
+        }
+        if (video.videoId) {
+            channelToVideoIds.get(channel).add(video.videoId);
+        }
+    }
+
+    console.log(`[IndexManager] Индексы обновлены. Новый размер буфера: ${scrapedDataBuffer.length}`);
+    console.log(`[IndexManager] visitedVideoIds.size: ${visitedVideoIds.size}`);
+    console.log(`[IndexManager] channelVideoCounts.size: ${channelVideoCounts.size}`);
+    console.log(`[IndexManager] channelToVideoIds.size: ${channelToVideoIds.size}`);
+    console.log("scrapedDataBuffer", scrapedDataBuffer);
+    console.log("visitedVideoIds", visitedVideoIds);
+    console.log("channelVideoCounts", channelVideoCounts);
+    console.log("channelToVideoIds", channelToVideoIds);
+
+}
+
+/**
+ * Получает текущее состояние всех индексов и буфера.
+ * @returns {{ visitedVideoIds: Set<string>, channelVideoCounts: Map<string, number>, channelToVideoIds: Map<string, Set<string>>, scrapedDataBuffer: Array<Object> }}
+ */
+export function getStateSnapshot() {
+    // Возвращаем копии, чтобы предотвратить внешнее мутирование внутреннего состояния
+    return {
+        visitedVideoIds: new Set(visitedVideoIds),
+        channelVideoCounts: new Map(channelVideoCounts),
+        channelToVideoIds: new Map(Array.from(channelToVideoIds, ([k, v]) => [k, new Set(v)])),
+        scrapedDataBuffer: [...scrapedDataBuffer] // Копия массива
+    };
+}
+
+/**
+ * Получает текущий буфер извлеченных данных.
+ * @returns {Array<Object>} Копия массива scrapedDataBuffer.
+ */
+export function getScrapedDataBuffer() {
+    return [...scrapedDataBuffer];
+}
+
+/**
+ * Очищает буфер извлеченных данных.
+ */
+export function clearScrapedDataBuffer() {
+    console.log("[IndexManager] Очистка буфера извлеченных данных.");
+    scrapedDataBuffer = [];
+    console.log("[IndexManager] Буфер извлеченных данных очищен.");
+}
+
+// --- 3. Вспомогательные функции (по мере необходимости) ---
+
+/**
+ * Проверяет, был ли уже посещен указанный sourceVideoId.
+ * @param {string} sourceVideoId
+ * @returns {boolean}
+ */
+export function isSourceVisited(sourceVideoId) {
+    return visitedVideoIds.has(sourceVideoId);
+}
+
+/**
+ * Возвращает количество уникальных каналов, найденных в данных.
+ * @returns {number}
+ */
+export function getUniqueChannelCount() {
+    return channelVideoCounts.size;
+}
+
+/**
+ * Возвращает общее количество уникальных видео, найденных в данных.
+ * @returns {number}
+ */
+export function getTotalUniqueVideoCount() {
+    // Суммируем количество уникальных видео по всем каналам
+    let total = 0;
+    for (const videoIdsSet of channelToVideoIds.values()) {
+        total += videoIdsSet.size;
+    }
+    return total;
+}
+
+// Экспортируем также функции для получения самих структур, если нужно прямой доступ
+// (но рекомендуется использовать getStateSnapshot для согласованности)
+export { visitedVideoIds, channelVideoCounts, channelToVideoIds };
+
+=== END FILE: D:\разработка\youtube-parser-os\core\index-manager.js ===
 
 --------------------------------------------------------------------------------
 
@@ -1128,6 +1993,7 @@ export class ScenarioEngine {
     async run(scenarioDefinition, params = {}, tabId = null) {
         const instanceId = this.#generateId();
         const controller = new AbortController();
+        console.log(`[ScenarioEngine] Начало запуска сценария ${scenarioDefinition.id}, tabId:`, tabId); // <-- Лог
 
         /** @type {ScenarioContext} */
         const context = {
@@ -1142,24 +2008,25 @@ export class ScenarioEngine {
                 });
             },
             abortSignal: async () => {
-                // Возвращаем Promise, который отклоняется, если controller.signal сработает.
-                // Если сигнал уже сработал (controller.abort() был вызван), то promise1 уже отклонен.
                 return new Promise((resolve, reject) => {
                     // 1. Проверка, не сработал ли сигнал уже
                     if (controller.signal.aborted) {
-                        // Если сработал, немедленно отклоняем промис
+                        // Если сработал, немедленно ОТКЛОНЯЕМ промис
                         reject(new Error('Сценарий остановлен пользователем.'));
-                        return; // Важно выйти
+                        return;
                     }
                     // 2. Если сигнал еще не сработал, ставим слушатель
-                    // Когда controller.abort() будет вызван, сработает 'abort' на signal
                     controller.signal.addEventListener('abort', () => {
+                        // Когда controller.abort() будет вызван, ОТКЛАНИМ промис
                         reject(new Error('Сценарий остановлен пользователем.'));
-                    }, { once: true }); // { once: true } гарантирует, что слушатель сработает только один раз
-                    // 3. Если до этого никто не вызвал controller.abort(), промис остается неразрешенным
-                    // и функция abortSignal "ждёт". Это нормально.
-                    // resolve() не вызывается никогда напрямую здесь, только reject через 'abort'.
-                    // resolve() не нужен, потому что задача abortSignal - только уведомить об остановке.
+                    }, { once: true });
+
+                    // 3. !!!КЛЮЧЕВОЕ ИЗМЕНЕНИЕ!!!
+                    // Если сигнал еще не сработал, это означает, что остановки нет.
+                    // Следовательно, abortSignal должен УСПЕШНО ЗАВЕРШИТЬСЯ.
+                    // Мы не ждем "реального" события abort, мы просто сообщаем,
+                    // что на данный момент остановки нет.
+                    resolve(); // <-- УСПЕШНО РАЗРЕШАЕМ промис
                 });
             },
             // Передаем контроллер в контекст, чтобы получить к нему доступ в finally
@@ -1355,6 +2222,193 @@ export class ScenarioEngine {
 
 --------------------------------------------------------------------------------
 
+=== START FILE: D:\разработка\youtube-parser-os\core\utils\blacklist.js ===
+
+// core/utils/blacklist.js
+
+const BLACKLIST_STORAGE_KEY = 'unavailableVideoIds';
+
+/**
+ * Получает Set недоступных videoId из хранилища.
+ * @returns {Promise<Set<string>>} Множество недоступных ID.
+ */
+export async function getUnavailableVideoIds() {
+    try {
+        const result = await chrome.storage.local.get([BLACKLIST_STORAGE_KEY]);
+        const idsArray = result[BLACKLIST_STORAGE_KEY] || [];
+        return new Set(idsArray);
+    } catch (e) {
+        console.error("[Blacklist] Ошибка получения черного списка:", e);
+        return new Set(); // Возвращаем пустой Set в случае ошибки
+    }
+}
+
+/**
+ * Добавляет один или несколько videoId в черный список.
+ * @param {string | string[]} videoIds - ID видео или массив ID.
+ * @returns {Promise<void>}
+ */
+export async function addUnavailableVideoIds(videoIds) {
+    const idsToAdd = Array.isArray(videoIds) ? videoIds : [videoIds];
+    if (idsToAdd.length === 0) return;
+
+    try {
+        const currentSet = await getUnavailableVideoIds();
+        let changed = false;
+
+        idsToAdd.forEach(id => {
+            if (id && !currentSet.has(id)) {
+                currentSet.add(id);
+                changed = true;
+            }
+        });
+
+        if (changed) {
+            const newArray = Array.from(currentSet);
+            await chrome.storage.local.set({ [BLACKLIST_STORAGE_KEY]: newArray });
+            console.log(`[Blacklist] Добавлено ${idsToAdd.length} ID в черный список. Общий размер: ${newArray.length}`);
+        } else {
+            console.log("[Blacklist] Нет новых ID для добавления в черный список.");
+        }
+    } catch (e) {
+        console.error("[Blacklist] Ошибка добавления в черный список:", e);
+        throw e; // Пробрасываем ошибку для обработки выше
+    }
+}
+
+/**
+ * Проверяет, находится ли конкретный videoId в черном списке.
+ * @param {string} videoId - ID видео.
+ * @returns {Promise<boolean>}
+ */
+export async function isVideoUnavailable(videoId) {
+    if (!videoId) return false;
+    const blacklistSet = await getUnavailableVideoIds();
+    return blacklistSet.has(videoId);
+}
+
+=== END FILE: D:\разработка\youtube-parser-os\core\utils\blacklist.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\core\utils\parser.js ===
+
+// core/utils/parser.js
+
+/**
+ * Отправляет сообщение в content script для парсинга и подсветки видео.
+ * @param {Object} context - Контекст сценария (для tabId и логов).
+ * @returns {Promise<{status: string, highlightedCards?: HTMLElement[], highlightedCount?: number, message?: string}>}
+ * ВАЖНО: DOM-элементы нельзя передавать через sendMessage, они становятся пустыми объектами {}.
+ * Поэтому возвращаем только количество. Для получения самих данных будет следующий шаг (scraping).
+ */
+export async function parseAndHighlight(context) {
+    const { log, tabId } = context;
+    // Предполагается, что sourceVideoId будет доступен в context
+    // Это может быть ID текущей вкладки, если мы на странице видео, или передано специально.
+    // Для MVP возьмем его из URL вкладки или используем заглушку.
+    let sourceVideoId = 'unknown_source';
+    try {
+        if (typeof tabId === 'number' && tabId > 0) {
+            const tab = await chrome.tabs.get(tabId);
+            const url = new URL(tab.url);
+            sourceVideoId = url.searchParams.get('v') || 'unknown_source_from_url';
+        }
+    } catch (getUrlErr) {
+        console.warn("[Core Parser] Не удалось получить sourceVideoId из URL вкладки:", getUrlErr);
+        sourceVideoId = 'unknown_source';
+    }
+
+    // Переопределяем sourceVideoId, если он передан явно в params (например, из сценария навигации)
+    if (context.params && context.params.sourceVideoId) {
+        sourceVideoId = context.params.sourceVideoId;
+    }
+
+    if (typeof tabId !== 'number' || tabId < 0) {
+        const errorMsg = `Недействительный tabId для парсинга: ${tabId}`;
+        log(`❌ ${errorMsg}`, { module: 'Parser', level: 'error' });
+        throw new Error(errorMsg);
+    }
+
+    log(`🔍 Отправка запроса на парсинг, подсветку и скрапинг видео (источник: ${sourceVideoId})...`, { module: 'Parser' });
+
+    try {
+        const response = await chrome.tabs.sendMessage(tabId, {
+            action: "parseAndHighlight",
+            sourceVideoId: sourceVideoId // Передаем sourceVideoId в content script
+        });
+
+        if (response && response.status === "success") {
+            const count = response.highlightedCount;
+            const data = response.scrapedData || [];
+            log(`✅ Парсинг, подсветка и скрапинг завершены. Найдено/подсвечено видео: ${count}, извлечено данных: ${data.length}`, { module: 'Parser' });
+
+            // Выводим в консоль background первые N записей для проверки
+            const itemsToShow = Math.min(3, data.length);
+            if (itemsToShow > 0) {
+                console.group(`[Core Parser] Данные первых ${itemsToShow} извлеченных карточек:`);
+                for (let i = 0; i < itemsToShow; i++) {
+                    const item = data[i];
+                    console.log(
+                        `Карточка ${i + 1}:`,
+                        `ID: ${item.videoId || 'N/A'}`,
+                        `Название: "${(item.title || 'N/A').substring(0, 50)}${(item.title || '').length > 50 ? '...' : ''}"`,
+                        `Канал: "${(item.channelName || 'N/A').substring(0, 30)}${(item.channelName || '').length > 30 ? '...' : ''}"`
+                    );
+                }
+                console.groupEnd();
+            }
+
+            return response; // { status: "success", highlightedCount: number, scrapedData: Array }
+        } else {
+            const errorMsg = response?.message || "Неизвестная ошибка парсинга/подсветки/скрапинга";
+            log(`❌ Ошибка парсинга/подсветки/скрапинга: ${errorMsg}`, { module: 'Parser', level: 'error' });
+            throw new Error(errorMsg);
+        }
+    } catch (err) {
+        log(`❌ Ошибка связи при парсинге/подсветке/скрапинге: ${err.message}`, { module: 'Parser', level: 'error' });
+        throw err; // Пробрасываем для обработки выше
+    }
+}
+
+/**
+ * Отправляет сообщение в content script для удаления подсветки.
+ * @param {Object} context - Контекст сценария (для tabId и логов).
+ * @returns {Promise<void>}
+ */
+export async function removeParserHighlights(context) {
+    const { log, tabId } = context;
+
+    if (typeof tabId !== 'number' || tabId < 0) {
+        // Не критично, просто логируем
+        console.warn("[Core Parser] Недействительный tabId для удаления подсветки:", tabId);
+        return;
+    }
+
+    log(`🧹 Отправка запроса на удаление подсветки...`, { module: 'Parser' });
+
+    try {
+        const response = await chrome.tabs.sendMessage(tabId, {
+            action: "removeParserHighlights"
+        });
+
+        if (response && response.status === "success") {
+            log(`✅ Подсветка удалена.`, { module: 'Parser' });
+        } else {
+            const errorMsg = response?.message || "Неизвестная ошибка удаления подсветки";
+            log(`⚠️ Ошибка удаления подсветки: ${errorMsg}`, { module: 'Parser', level: 'warn' });
+            // Не бросаем ошибку, так как это вспомогательная операция
+        }
+    } catch (err) {
+        // Может возникнуть, если вкладка закрыта
+        log(`⚠️ Ошибка связи при удалении подсветки: ${err.message}`, { module: 'Parser', level: 'warn' });
+    }
+}
+
+=== END FILE: D:\разработка\youtube-parser-os\core\utils\parser.js ===
+
+--------------------------------------------------------------------------------
+
 === START FILE: D:\разработка\youtube-parser-os\core\utils\scroller.js ===
 
 // core/utils/scroller.js
@@ -1369,18 +2423,34 @@ export class ScenarioEngine {
  */
 export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step = 1000) {
     const { log, abortSignal } = context;
+    let tabId = context.tabId;
+    console.log("[Scroller] scrollPageNTimes вызвана с параметрами:", { count, delayMs, step, tabId: context.tabId }); // <-- Лог
     log(`🔄 Начинаем скроллинг страницы: ${count} раз(а), шаг ${step}px, задержка ${delayMs}мс`, { module: 'Scroller' });
 
     try {
-        // --- ПРОВЕРКА tabId ---
-        if (typeof context.tabId !== 'number' || context.tabId < 0) {
-            const errorMsg = `Недействительный tabId для sendMessage: ${context.tabId}. Убедитесь, что сценарий запущен на активной вкладке YouTube.`;
+
+        // --- УЛУЧШЕННАЯ ПРОВЕРКА tabId ---
+        // 1. Сначала проверяем, передан ли tabId в context
+        let effectiveTabId = tabId;
+
+        // 2. Если tabId все еще null/undefined, логируем предупреждение
+        // (Это может произойти, если background.js не смог его получить)
+        if (effectiveTabId == null) { // == проверит и null, и undefined
+            const errorMsg = `Недействительный tabId для sendMessage: ${effectiveTabId}. Убедитесь, что сценарий запущен на активной вкладке YouTube.`;
+            log(`❌ ${errorMsg}`, { module: 'Scroller', level: 'error' });
+            throw new Error(errorMsg); // Прерываем выполнение скроллинга
+        }
+
+        // 3. Проверка типа (дополнительная предосторожность)
+        if (typeof effectiveTabId !== 'number' || effectiveTabId < 0) {
+            const errorMsg = `Недействительный тип или значение tabId для sendMessage: ${effectiveTabId} (тип: ${typeof effectiveTabId}). Ожидалось положительное число.`;
             log(`❌ ${errorMsg}`, { module: 'Scroller', level: 'error' });
             throw new Error(errorMsg);
         }
-        // --- КОНЕЦ ПРОВЕРКИ tabId ---
-
+        // --- КОНЕЦ УЛУЧШЕННОЙ ПРОВЕРКИ tabId ---
+        console.log("Проверка tabId пройдена", effectiveTabId);
         for (let i = 1; i <= count; i++) {
+            console.log("// 1. Проверяем, не был ли запрос на остановку/прерывание");
             // 1. Проверяем, не был ли запрос на остановку/прерывание
             await abortSignal();
 
@@ -1417,20 +2487,48 @@ export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step
             // 4. Если это не последний скролл, делаем паузу
             if (i < count) {
                 log(`⏱️ Ожидание ${delayMs}мс перед следующим скроллом (${i + 1}/${count})...`, { module: 'Scroller' });
-                // Создаем промис, который разрешится либо по истечении времени,
-                // либо если будет вызван abortSignal (прерывание)
-                // ПРАВИЛЬНЫЙ СПОСОБ: Используем Promise.race
+
+                // Создаем промис для задержки
                 const delayPromise = new Promise(resolve => setTimeout(resolve, delayMs));
+
                 try {
-                    // Promise.race "гонка" между задержкой и сигналом остановки
-                    await Promise.race([delayPromise, context.abortSignal()]);
-                    // Если context.abortSignal() "выиграет" гонку (отклонится), await бросит исключение.
-                    // Если delayPromise "выиграет" (разрешится), await продолжит выполнение.
-                } catch (abortErr) {
-                    // Если abortSignal отклонился, мы попадаем сюда
-                    log(`⏹️ Скроллинг остановлен пользователем во время ожидания.`, { module: 'Scroller', level: 'warn' });
-                    throw abortErr; // Пробрасываем исключение дальше
+                    // Используем Promise.race между задержкой и сигналом остановки.
+                    // context.abortSignal() должен возвращать промис, который:
+                    // - Разрешается успешно, если остановки нет (ЭТО НЕВЕРНО ДЛЯ RACE!)
+                    // - Отклоняется с ошибкой, если сработал сигнал остановки.
+                    //
+                    // ПРАВИЛЬНАЯ логика: мы хотим ждать задержку, НО прерваться, если поступил сигнал.
+                    // Значит, abortSignal должен возвращать промис, который ЖДЕТ сигнала (не разрешается сам).
+                    // Но наша текущая реализация resolve() его. Это проблема.
+                    //
+                    // ПЕРЕДЕЛАЕМ ЛОГИКУ:
+                    // 1. Создадим отдельный AbortController для этой паузы.
+                    // 2. Будем ждать либо таймаут, либо сигнал остановки напрямую.
+
+                    // Создаем новый контроллер для управления этой паузой
+                    const pauseController = new AbortController();
+                    const abortPromise = new Promise((_, reject) => {
+                        // Слушаем сигнал остановки от основного контроллера сценария
+                        context.controller.signal.addEventListener('abort', () => {
+                            reject(new Error('Сценарий остановлен пользователем.'));
+                        }, { once: true, signal: pauseController.signal }); // Привязываем к нашему pauseController, чтобы можно было отменить слушатель
+                    });
+
+                    // Гонка между таймаутом и сигналом остановки
+                    await Promise.race([
+                        new Promise(resolve => setTimeout(resolve, delayMs)), // Таймаут
+                        abortPromise // Сигнал остановки
+                    ]);
+
+                    // Если дошли до этой точки, значит либо прошло время, либо сценарий остановлен.
+                    // Проверка на остановку уже включена в abortPromise.
+
+                } catch (err) {
+                    // Если прервано по сигналу
+                    log(`⏹️ Скроллинг остановлен пользователем во время ожидания (${i + 1}/${count}).`, { module: 'Scroller', level: 'warn' });
+                    throw err; // Пробрасываем исключение дальше
                 }
+                // Если не было исключения, цикл продолжится
             }
         }
 
@@ -1447,6 +2545,8 @@ export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step
         }
 
     } catch (err) {
+        console.error("[Scroller] Поймано исключение в scrollPageNTimes:", err); // <-- Лог ошибок
+
         if (err.message === 'Сценарий остановлен пользователем.') {
             log(`⏹️ Скроллинг остановлен пользователем.`, { module: 'Scroller', level: 'warn' });
         } else {
@@ -1460,9 +2560,236 @@ export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step
 
 --------------------------------------------------------------------------------
 
+=== START FILE: D:\разработка\youtube-parser-os\core\utils\video-selector.js ===
+
+// core/utils/video-selector.js
+
+import { getUnavailableVideoIds } from './blacklist.js';
+
+/**
+ * @typedef {Object} VideoData
+ * @property {string} videoId - Уникальный идентификатор видео.
+ * @property {string} title - Название видео.
+ * @property {string} channelName - Название канала.
+ * @property {string} sourceVideoId - ID видео, с которого был совершен переход.
+ * @property {string} views - Количество просмотров.
+ * @property {string} thumbnailUrl - URL миниатюры.
+ * ... другие поля
+ */
+
+/**
+ * Выбирает следующее видео для перехода по алгоритму "минимизация количества видео на канал".
+ *
+ * @param {Object} dependencies - Зависимости для работы функции.
+ * @param {Set<string>} dependencies.visitedSourceVideoIds - Множество ID видео, на которые мы уже заходили (sourceVideoId).
+ * @param {Map<string, number>} dependencies.channelVideoCounts - Словарь: канал -> количество видео из этого канала.
+ * @param {Map<string, Set<string>>} dependencies.channelToVideoIds - Словарь: канал -> множество ID видео этого канала.
+ * @param {string} currentVideoId - ID текущего видео (на котором мы сейчас находимся и которое только что спарсили).
+ * @param {'current_recommendations' | 'all_videos'} mode - Режим выбора.
+ * @param {Array<VideoData>} scrapedData - Массив видео, полученных на текущем шаге (для 'current_recommendations').
+ * @param {Object} context - Контекст для логирования.
+ * @param {Function} context.log - Функция логирования.
+ * @returns {Promise<string|null>} ID следующего видео (videoId) или null, если не удалось выбрать.
+ */
+export async function selectNextVideo(
+    { visitedSourceVideoIds, channelVideoCounts, channelToVideoIds },
+    currentVideoId,
+    mode,
+    scrapedData = [],
+    context
+) {
+    const { log } = context;
+
+    log(`🔍 Начинаем выбор следующего видео. Запрошенный режим: ${mode}, Текущее видео ID: ${currentVideoId}`, { module: 'VideoSelector' });
+    log(`👣 Размер списка посещенных sourceVideoId: ${visitedSourceVideoIds.size}`, { module: 'VideoSelector' });
+    log(`📈 Размер индекса каналов: ${channelVideoCounts.size}`, { module: 'VideoSelector' });
+    log(`🎞️ Размер индекса видео по каналам: ${channelToVideoIds.size}`, { module: 'VideoSelector' });
+
+    try {
+        // --- 0. Получаем черный список недоступных видео ---
+        const unavailableVideoIdsSet = await getUnavailableVideoIds();
+        log(`🔒 Получен черный список недоступных видео. Размер: ${unavailableVideoIdsSet.size}`, { module: 'VideoSelector' });
+
+        // --- 1. Определяем кандидатов в зависимости от исходного режима ---
+        let candidateVideos = [];
+        let candidateSource = '';
+        let effectiveMode = mode; // Изначально используем запрошенный режим
+
+        // --- ВАЖНО: Проверка на количество уникальных каналов ---
+        // Определяем кандидатов для проверки количества каналов
+        let channelsToCheckForOverride = new Set();
+        if (effectiveMode === 'current_recommendations') {
+            channelsToCheckForOverride = new Set(scrapedData.map(v => v.channelName || 'Неизвестный канал'));
+        } else if (effectiveMode === 'all_videos') {
+            // Для 'all_videos' сначала определим топ каналы, как в основном алгоритме
+            const allChannels = Array.from(channelVideoCounts.keys());
+            const sortedChannels = allChannels
+                .map(channel => ({ name: channel, count: channelVideoCounts.get(channel) || 0 }))
+                .sort((a, b) => a.count - b.count);
+            const top10ChannelsInitial = sortedChannels.slice(0, 10);
+            channelsToCheckForOverride = new Set(top10ChannelsInitial.map(c => c.name));
+        }
+
+        // Проверка условия: если уникальных каналов меньше 2, переопределяем режим
+        if (channelsToCheckForOverride.size < 2) {
+            const oldMode = effectiveMode;
+            effectiveMode = 'all_videos'; // Принудительно меняем режим
+            log(`⚠️ В исходных кандидатах для режима '${oldMode}' найдено менее 2 уникальных каналов (${channelsToCheckForOverride.size}). Режим выбора изменен на '${effectiveMode}'.`, { module: 'VideoSelector', level: 'warn' });
+        } else {
+            log(`✅ В исходных кандидатах для режима '${effectiveMode}' найдено ${channelsToCheckForOverride.size} уникальных каналов. Продолжаем с этим режимом.`, { module: 'VideoSelector' });
+        }
+        // --- Конец проверки на количество уникальных каналов ---
+
+        // --- 2. Основная логика выбора кандидатов с учетом эффективного режима ---
+        if (effectiveMode === 'current_recommendations') {
+            // --- РЕЖИМ: Анализ видео из последней подборки ---
+            candidateSource = 'последняя подборка (scrapedData)';
+            log(`🎞️ Режим 'current_recommendations': используем ${scrapedData.length} видео из последней подборки.`, { module: 'VideoSelector' });
+            candidateVideos = [...scrapedData]; // Копируем массив
+
+        } else if (effectiveMode === 'all_videos') {
+            // --- РЕЖИМ: Анализ всех видео ---
+            candidateSource = 'все видео (channelToVideoIds)';
+            log(`🌐 Режим 'all_videos': используем все видео из индексов.`, { module: 'VideoSelector' });
+
+            // 1. Получаем список уникальных каналов из channelVideoCounts
+            const allChannels = Array.from(channelVideoCounts.keys());
+            log(`📈 Найдено ${allChannels.length} уникальных каналов во всех данных.`, { module: 'VideoSelector' });
+
+            // 2. Сортируем каналы по возрастанию количества видео
+            const sortedChannels = allChannels
+                .map(channel => ({ name: channel, count: channelVideoCounts.get(channel) || 0 }))
+                .sort((a, b) => a.count - b.count);
+
+            log(`📊 Каналы отсортированы по возрастанию количества видео (первые 10):`, { module: 'VideoSelector' });
+            sortedChannels.slice(0, 10).forEach((c, i) => {
+                log(`   ${i + 1}. ${c.name} (${c.count})`, { module: 'VideoSelector' });
+            });
+
+            // 3. Берем первые 10 каналов
+            const top10Channels = sortedChannels.slice(0, 10);
+
+            // 4. Собираем все videoId из этих каналов
+            const videoIdsFromTopChannels = new Set();
+            for (const { name: channelName } of top10Channels) {
+                const videoIdsInChannel = channelToVideoIds.get(channelName);
+                if (videoIdsInChannel) {
+                    for (const id of videoIdsInChannel) {
+                        videoIdsFromTopChannels.add(id);
+                    }
+                }
+            }
+            log(`🎞️ Собрано ${videoIdsFromTopChannels.size} уникальных videoId из топ-10 каналов.`, { module: 'VideoSelector' });
+
+            // 5. Создаем "виртуальные" объекты VideoData для кандидатов
+            candidateVideos = Array.from(videoIdsFromTopChannels).map(videoId => {
+                // Найти канал для этого videoId (неэффективно, но для MVP сойдет)
+                let channelName = 'Неизвестный канал из Top10';
+                for (const { name: chName } of top10Channels) {
+                    const videoIds = channelToVideoIds.get(chName);
+                    if (videoIds && videoIds.has(videoId)) {
+                        channelName = chName;
+                        break;
+                    }
+                }
+                return { videoId, channelName };
+            });
+
+        } else {
+            log(`❓ Неизвестный эффективный режим выбора: ${effectiveMode}. Используем scrapedData как кандидатов.`, { module: 'VideoSelector', level: 'warn' });
+            candidateVideos = [...scrapedData];
+            candidateSource = 'scrapedData (по умолчанию для неизвестного режима)';
+            effectiveMode = 'current_recommendations'; // Уточняем эффективный режим для логики ниже
+        }
+
+        if (candidateVideos.length === 0) {
+            log(`📉 Нет кандидатов для выбора из источника '${candidateSource}'.`, { module: 'VideoSelector', level: 'warn' });
+            return null;
+        }
+
+        log(`✅ Получено ${candidateVideos.length} кандидатов для выбора из '${candidateSource}' (эффективный режим: ${effectiveMode}).`, { module: 'VideoSelector' });
+
+        // --- 3. Фильтрация кандидатов ---
+        const filteredCandidates = candidateVideos.filter(v =>
+            v.videoId &&
+            v.videoId !== currentVideoId &&
+            !unavailableVideoIdsSet.has(v.videoId)
+        );
+
+        log(`🧹 После фильтрации (не текущее, не недоступное): ${filteredCandidates.length} видео.`, { module: 'VideoSelector' });
+        if (filteredCandidates.length === 0) {
+            log(`📉 Нет кандидатов после фильтрации.`, { module: 'VideoSelector', level: 'warn' });
+            return null;
+        }
+
+        // --- 4. Сортировка каналов кандидатов по глобальному количеству видео ---
+        const candidateChannelsMap = new Map();
+        for (const video of filteredCandidates) {
+            const channel = video.channelName || 'Неизвестный канал';
+            if (!candidateChannelsMap.has(channel)) {
+                candidateChannelsMap.set(channel, { count: 0, videos: [] });
+            }
+            const globalCount = channelVideoCounts.get(channel) || 0;
+            candidateChannelsMap.get(channel).count = globalCount;
+            candidateChannelsMap.get(channel).videos.push(video);
+        }
+
+        const sortedCandidateChannels = Array.from(candidateChannelsMap.entries())
+            .map(([name, data]) => ({ name, ...data }))
+            .sort((a, b) => a.count - b.count);
+
+        log(`📊 Каналы кандидатов отсортированы по глобальному количеству видео (первые 10):`, { module: 'VideoSelector' });
+        sortedCandidateChannels.slice(0, 10).forEach((c, i) => {
+            log(`   ${i + 1}. ${c.name} (${c.count})`, { module: 'VideoSelector' });
+        });
+
+        // --- 5. Поиск подходящего видео ---
+        log(`🔍 Начинаем поиск подходящего видео по топ-каналам...`, { module: 'VideoSelector' });
+
+        for (let i = 0; i < Math.min(10, sortedCandidateChannels.length); i++) {
+            const channelData = sortedCandidateChannels[i];
+            const channelName = channelData.name;
+            const channelVideos = channelData.videos;
+            log(`🔍 Проверяем канал: ${channelName} (глобальное количество: ${channelData.count})`, { module: 'VideoSelector' });
+
+            for (const video of channelVideos) {
+                if (!visitedSourceVideoIds.has(video.videoId)) {
+                    log(`🎯 НАЙДЕНО подходящее видео: ${video.videoId} из канала ${channelName}`, { module: 'VideoSelector', level: 'success' });
+                    return video.videoId;
+                } else {
+                    log(`⏭️ Пропущено видео ${video.videoId} (уже было sourceVideoId)`, { module: 'VideoSelector' });
+                }
+            }
+        }
+
+        // --- 6. Fallback: случайное видео из отфильтрованных кандидатов ---
+        log(`🔄 Поиск по топ-каналам не дал результата. Пробуем случайное видео из отфильтрованных кандидатов...`, { module: 'VideoSelector', level: 'warn' });
+        if (filteredCandidates.length > 0) {
+            const randomIndex = Math.floor(Math.random() * filteredCandidates.length);
+            const randomVideo = filteredCandidates[randomIndex];
+            log(`🎲 Fallback выбрал случайное видео: ${randomVideo.videoId}`, { module: 'VideoSelector', level: 'warn' });
+            return randomVideo.videoId;
+        }
+
+        log(`❌ Не удалось выбрать следующее видео.`, { module: 'VideoSelector', level: 'error' });
+        return null;
+
+    } catch (err) {
+        log(`❌ Ошибка в процессе выбора следующего видео: ${err.message}`, { module: 'VideoSelector', level: 'error' });
+        console.error("[VideoSelector] Stack trace:", err);
+        return null;
+    }
+}
+
+=== END FILE: D:\разработка\youtube-parser-os\core\utils\video-selector.js ===
+
+--------------------------------------------------------------------------------
+
 === START FILE: D:\разработка\youtube-parser-os\popup\popup.css ===
 
-/* popup/popup.css */
+/* === popup/popup.css === */
+
+/* --- 1. Переменные темы --- */
 :root {
     --primary: #4338ca;
     --primary-hover: #3730a3;
@@ -1483,6 +2810,7 @@ export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+/* --- 2. Базовые стили --- */
 * {
     box-sizing: border-box;
     margin: 0;
@@ -1494,17 +2822,35 @@ body {
     background-color: var(--bg);
     color: var(--text);
     padding: 16px;
+    /* Фиксируем размер области видимости popup */
     width: 800px;
     height: 720px;
-    overflow: hidden;
+    /* Разрешаем скролл внутри body, если содержимое больше */
+    overflow: auto;
+    /* Убираем скрытие полос прокрутки, если они появятся */
+    /* overflow: hidden; УДАЛИТЬ */
 }
 
+/* --- 3. Макет приложения --- */
 .app-container {
     display: flex;
     flex-direction: column;
     gap: 16px;
-    height: 100%;
-    overflow: hidden;
+    /* Указываем желаемую высоту содержимого */
+    /* height: 100%; УДАЛИТЬ или изменить */
+    height: calc(720px - 32px);
+    /* 720px (body height) - 32px (padding body 16*2) = 688px */
+    /* ИЛИ, если хочешь конкретно 800px для содержимого: */
+    /* height: 800px; */
+    /* Установит высоту контента в 800px, независимо от body */
+    /* Если height будет больше, чем высота body (720px - 32px = 688px), появится скролл у body */
+
+    /* Предотвращаем рост больше заданной высоты, если содержимое меньше */
+    /* min-height: 100%; НЕ НУЖНО, если height фиксирован */
+    /* Разрешаем скролл внутри app-container, если его содержимое (секции) больше его высоты */
+    /* overflow: hidden; УДАЛИТЬ */
+    overflow: visible;
+    /* Или auto, если хочешь скролл внутри app-container при необходимости */
 }
 
 .app-title {
@@ -1515,6 +2861,7 @@ body {
     text-align: center;
 }
 
+/* --- 4. Секции (Sections) --- */
 .section {
     background: var(--card);
     border: 1px solid var(--border);
@@ -1522,6 +2869,10 @@ body {
     padding: 16px;
     box-shadow: var(--shadow);
     flex-shrink: 0;
+    /* 👇 ВАЖНО: Возвращаем overflow: hidden для .section */
+    overflow: hidden;
+    /* Это заставит flex-потомков (#logSection.content, #tableSection.content) 
+       управлять своим переполнением, если они используют flex и maxHeight/minHeight */
 }
 
 .section-header {
@@ -1541,37 +2892,7 @@ body {
     color: var(--text);
 }
 
-#logSection {
-    /* Позволяем секции журнала расти и сжиматься */
-    flex: 1;
-    /* Минимальная и максимальная высота для контроля */
-    min-height: 150px;
-    /* Минимальная высота, чтобы был виден хотя бы один лог */
-    /* max-height: 300px; */
-    /* Опционально: ограничить максимальную высоту */
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    /* Скрываем переполняющий контент самой секции */
-}
-
-
-
-.toggle-btn {
-    background: none;
-    border: none;
-    font-size: 16px;
-    cursor: pointer;
-    color: var(--secondary);
-    padding: 4px 8px;
-    border-radius: 6px;
-}
-
-.toggle-btn:hover {
-    background: var(--border);
-}
-
-/* Стиль для свернутого блока настроек */
+/* --- 5. Секция настроек --- */
 .settings-section.collapsed #settingsContent {
     display: none;
 }
@@ -1627,6 +2948,21 @@ body {
     margin-bottom: 12px;
 }
 
+.toggle-btn {
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    color: var(--secondary);
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+.toggle-btn:hover {
+    background: var(--border);
+}
+
+/* --- 6. Группы кнопок --- */
 .button-group {
     display: flex;
     flex-wrap: wrap;
@@ -1657,6 +2993,7 @@ body {
     box-shadow: none;
 }
 
+/* --- 7. Цвета кнопок --- */
 .btn-primary {
     background: var(--primary);
     color: white;
@@ -1711,7 +3048,17 @@ body {
     background: var(--secondary-hover);
 }
 
-/* Журнал */
+/* --- 8. Секция журнала --- */
+#logSection {
+    flex: 2;
+    min-height: 250px;
+    /* Уже установлено */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* Остается на .section */
+}
+
 .log-container {
     padding: 12px;
     flex: 1;
@@ -1735,6 +3082,7 @@ body {
     border-bottom: none;
 }
 
+/* Цвета уровней логов */
 .log-level-info {
     color: var(--text);
 }
@@ -1761,22 +3109,22 @@ body {
     padding: 20px 0;
 }
 
+/* --- 9. Секция таблицы --- */
 #tableSection {
-    /* Позволяем секции таблицы тоже расти и сжиматься, но с меньшим приоритетом */
-    flex: 2;
-    /* Минимальная высота */
-    min-height: 150px;
+    flex: 3;
+    min-height: 250px;
+    /* Уже установлено */
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    /* Скрываем переполняющий контент самой секции */
+    /* Остается на .section */
 }
 
 #tableSection .section-header {
     margin-bottom: 8px;
 }
 
-/* Таблица */
+/* --- 10. Таблица данных --- */
 .table-container {
     flex: 1;
     overflow: auto;
@@ -1826,7 +3174,7 @@ body {
     border-radius: 4px;
 }
 
-/* Скроллбары */
+/* --- 11. Скроллбары --- */
 .log-container::-webkit-scrollbar,
 .table-container::-webkit-scrollbar {
     width: 6px;
@@ -1927,6 +3275,8 @@ body {
                     <button id="copyTableBtn" class="btn btn-info">📋 Копировать таблицу</button>
                     <button id="clearTableBtn" class="btn btn-danger">🗑️ Очистить таблицу</button>
                     <button id="clearLogBtn" class="btn btn-secondary">🧹 Очистить журнал</button>
+                    <button id="resetIndicesBtn" class="btn btn-secondary">🔄 Сбросить индексы</button>
+                    <button id="dumpIndicesBtn" class="btn btn-secondary">🔍 Dump Indices to Console</button>
                 </div>
             </div>
         </section>
@@ -2217,7 +3567,7 @@ class PopupApp {
                     iterations,
                     mode,
                     // Параметры для скроллинга (можно сделать настройками позже)
-                    count: 5,
+                    count: 3,
                     delayMs: 1500,
                     step: 1000
                 }
@@ -2240,10 +3590,13 @@ class PopupApp {
             console.error("[PopupApp] Исключение при запуске сценария:", err);
             document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи при запуске сценария: ${err.message}`, level: 'error' } }));
             // Возвращаем кнопки в исходное состояние в случае ошибки
+            this.isScenarioLaunchInProgress = false;
             this.updateScenarioControlButtons(false);
         } finally {
             // Сбросить флаг в любом случае, после попытки запуска
+            console.log("[PopupApp] Finally блок handleRunScenario: сброс флага isScenarioLaunchInProgress.");
             this.isScenarioLaunchInProgress = false; // <-- Сбросить флаг
+            this.updateScenarioControlButtons(false);
         }
     }
 
@@ -2420,7 +3773,8 @@ export class ControlSection {
         this.copyTableBtn = document.getElementById('copyTableBtn');
         this.clearTableBtn = document.getElementById('clearTableBtn');
         this.clearLogBtn = document.getElementById('clearLogBtn');
-
+        this.resetIndicesBtn = document.getElementById('resetIndicesBtn');
+        this.dumpIndicesBtn = document.getElementById('dumpIndicesBtn');
         // Добавляем ссылку на селектор сценариев
         this.scenarioSelector = document.getElementById('scenarioSelector'); // <-- Новое
 
@@ -2431,6 +3785,19 @@ export class ControlSection {
         // Слушаем внутренние события от popup контроллера
         document.addEventListener('control:enableStart', () => this.enableStart());
         document.addEventListener('control:disableStart', () => this.disableStart());
+
+        if (this.resetIndicesBtn) {
+            this.resetIndicesBtn.addEventListener('click', () => this.handleResetIndices());
+        } else {
+            console.warn("[ControlSection] Кнопка 'resetIndicesBtn' не найдена в DOM.");
+        }
+
+        // 👇 НОВЫЙ обработчик для кнопки вывода состояния
+        if (this.dumpIndicesBtn) {
+            this.dumpIndicesBtn.addEventListener('click', () => this.handleDumpIndices());
+        } else {
+            console.warn("[ControlSection] Кнопка 'dumpIndicesBtn' не найдена в DOM.");
+        }
 
         // Привязываем обработчики событий UI
 
@@ -2476,6 +3843,66 @@ export class ControlSection {
 
     handleClearLog() {
         this.dispatchEvent('clearLog');
+    }
+
+    async handleResetIndices() {
+        console.log("[ControlSection] Начало handleResetIndices");
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: '📤 Отправка команды на сброс индексов...', level: 'info' } }));
+
+        try {
+            // Отправляем сообщение в background
+            const response = await chrome.runtime.sendMessage({
+                action: "resetIndices"
+            });
+
+            if (response && response.status === "success") {
+                console.log("[ControlSection] Индексы успешно сброшены в background");
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Индексы успешно сброшены', level: 'success' } }));
+                // Опционально: можно отправить событие, если другим компонентам нужно знать
+                // document.dispatchEvent(new CustomEvent('indicesReset'));
+            } else {
+                const errorMsg = response?.message || 'Неизвестная ошибка';
+                console.error("[ControlSection] Ошибка сброса индексов в background:", errorMsg);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка сброса индексов: ${errorMsg}`, level: 'error' } }));
+            }
+        } catch (err) {
+            console.error("[ControlSection] Ошибка отправки команды сброса индексов в background:", err);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи: ${err.message}`, level: 'error' } }));
+        }
+    }
+
+    async handleDumpIndices() {
+        console.log("[ControlSection] Начало handleDumpIndices");
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: '🔍 Запрос состояния индексов...', level: 'info' } }));
+
+        try {
+            // Отправляем сообщение в background для получения состояния
+            const response = await chrome.runtime.sendMessage({
+                action: "getIndexState"
+            });
+
+            if (response && response.status === "success") {
+                const state = response.serializableState;
+                console.log("[ControlSection] === Состояние индексов IndexManager ===");
+
+                // Выводим данные из объекта state с пояснениями
+                console.log(`scrapedDataBuffer:`, `${state.scrapedDataBuffer_count} элементов`, state.scrapedDataBuffer_sample);
+                console.log(`visitedVideoIds:`, `${state.visitedVideoIds_count} элементов`, state.visitedVideoIds_sample);
+                console.log(`channelVideoCounts:`, `${state.channelVideoCounts_count} элементов`, state.channelVideoCounts_sample);
+                console.log(`channelToVideoIds:`, `${state.channelToVideoIds_count} элементов`, state.channelToVideoIds_sample);
+
+                console.log("[ControlSection] === Конец состояния индексов ===");
+
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Состояние индексов выведено в консоль background', level: 'success' } }));
+            } else {
+                const errorMsg = response?.message || 'Неизвестная ошибка';
+                console.error("[ControlSection] Ошибка получения состояния индексов из background:", errorMsg);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка получения состояния индексов: ${errorMsg}`, level: 'error' } }));
+            }
+        } catch (err) {
+            console.error("[ControlSection] Ошибка отправки запроса состояния индексов в background:", err);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка связи: ${err.message}`, level: 'error' } }));
+        }
     }
 
     enableStart() {
@@ -2959,8 +4386,13 @@ export class TableSection {
 
 // scenarios/parse-recommendation.js
 import { scrollPageNTimes } from '../core/utils/scroller.js';
-// import { logger } from '../background/background.js'; // Будет использоваться через context.log
-
+import { parseAndHighlight, removeParserHighlights } from '../core/utils/parser.js';
+import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
+import { logger } from '../background/background.js'; // Убедись, что logger доступен
+import { tableAdapter } from '../background/background.js'; // 👈 НОВОЕ: Импорт tableAdapter
+import { getUnavailableVideoIds, addUnavailableVideoIds } from '../core/utils/blacklist.js';
+import { selectNextVideo } from '../core/utils/video-selector.js';
+import { getStateSnapshot } from '../core/index-manager.js';
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
  */
@@ -2974,6 +4406,7 @@ export const parseRecommendationScenario = {
      */
     async execute(context) {
         const { log, params = {}, tabId, abortSignal } = context;
+        console.log("[ParseRecommendation] Начало выполнения, context:", { params, tabId }); // <-- Лог
 
         // Параметры по умолчанию, как указано в задаче
         const scrollParams = {
@@ -2982,30 +4415,211 @@ export const parseRecommendationScenario = {
             step: parseInt(params.step, 10) || 1000
         };
 
+        const selectionMode = params.mode || 'all_videos'; // По умолчанию 'all_videos'
+        const internalSelectionMode = selectionMode;
+
         log(`🚀 Сценарий "Парсинг рекомендаций" запущен.`, { module: 'ParseRecommendation' });
         log(`🔧 Параметры скроллинга: ${JSON.stringify(scrollParams)}`, { module: 'ParseRecommendation' });
+        log(`🧠 Алгоритм выбора следующего видео: ${internalSelectionMode}`, { module: 'ParseRecommendation' }); // 👈 НОВОЕ
 
         try {
             // Проверяем, не было ли запроса на остановку до начала
+            log(`⏳ Проверка abortSignal перед скроллингом...`, { module: 'ParseRecommendation' });
             await abortSignal();
+            log(`✅ Проверка abortSignal пройдена.`, { module: 'ParseRecommendation' });
 
+            // --- 0. НОВОЕ: Проверка доступности текущего видео ---
+            log(`🔒 Проверка доступности текущего видео...`, { module: 'ParseRecommendation' });
+            try {
+                // Получаем URL текущей вкладки
+                if (typeof tabId !== 'number' || tabId < 0) {
+                    throw new Error(`Недействительный tabId: ${tabId}`);
+                }
+                const tab = await chrome.tabs.get(tabId);
+                const currentUrl = tab.url;
+                log(`🔒 Текущий URL: ${currentUrl}`, { module: 'ParseRecommendation' });
+
+                // Извлекаем videoId из URL
+                let currentVideoId = null;
+                try {
+                    const url = new URL(currentUrl);
+                    if (url.hostname.includes('youtube.com') && url.pathname === '/watch') {
+                        currentVideoId = url.searchParams.get('v');
+                    }
+                } catch (urlErr) {
+                    console.warn("[ParseRecommendation] Ошибка разбора URL:", urlErr);
+                }
+
+                if (!currentVideoId) {
+                    log(`⚠️ Не удалось извлечь videoId из URL. Пропускаем проверку доступности.`, { module: 'ParseRecommendation', level: 'warn' });
+                    // Продолжаем выполнение
+                } else {
+                    log(`🔒 Проверяем доступность видео ID: ${currentVideoId}...`, { module: 'ParseRecommendation' });
+
+                    // Отправляем сообщение content script для проверки
+                    const checkResponse = await chrome.tabs.sendMessage(tabId, {
+                        action: "checkVideoAvailability"
+                    });
+
+                    if (checkResponse && checkResponse.status === "success") {
+                        const isAvailable = checkResponse.isAvailable;
+                        log(`🔒 Результат проверки для ${currentVideoId}: ${isAvailable ? 'Доступно' : 'Недоступно'}`, { module: 'ParseRecommendation', level: isAvailable ? 'info' : 'warn' });
+
+                        if (!isAvailable) {
+                            // Видео недоступно - добавляем в черный список
+                            log(`🔒 Видео ${currentVideoId} недоступно. Добавляем в черный список.`, { module: 'ParseRecommendation', level: 'error' });
+                            await addUnavailableVideoIds(currentVideoId);
+                            log(`🔒 Видео ${currentVideoId} добавлено в черный список недоступных.`, { module: 'ParseRecommendation', level: 'warn' });
+
+                            // Здесь можно решить, прерывать ли сценарий или продолжать
+                            // Для MVP: прерываем сценарий
+                            log(`⏹️ Сценарий остановлен из-за недоступности текущего видео (${currentVideoId}).`, { module: 'ParseRecommendation', level: 'error' });
+                            throw new Error(`Текущее видео (${currentVideoId}) недоступно. Добавлено в черный список.`);
+
+                            // Альтернатива: продолжить, но залогировать ошибку
+                            // log(`⚠️ Текущее видео недоступно, но сценарий продолжится.`, { module: 'ParseRecommendation', level: 'warn' });
+                        } else {
+                            log(`✅ Текущее видео доступно. Продолжаем выполнение.`, { module: 'ParseRecommendation' });
+                        }
+                    } else {
+                        const checkErrorMsg = checkResponse?.message || "Неизвестная ошибка проверки";
+                        log(`⚠️ Ошибка проверки доступности: ${checkErrorMsg}`, { module: 'ParseRecommendation', level: 'warn' });
+                        // Продолжаем выполнение, несмотря на ошибку проверки
+                    }
+                }
+            } catch (checkErr) {
+                log(`⚠️ Ошибка связи при проверке доступности: ${checkErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                // Продолжаем выполнение, несмотря на ошибку связи
+            }
             // --- 1. Скроллинг страницы ---
+            log(`🔄 Вызов scrollPageNTimes...`, { module: 'ParseRecommendation' });
             await scrollPageNTimes(context, scrollParams.count, scrollParams.delayMs, scrollParams.step);
+            log(`✅ scrollPageNTimes завершен.`, { module: 'ParseRecommendation' });
 
-            // --- 2. TODO: Парсинг и подсветка (в следующем шаге) ---
-            // const parsedCards = await parseAndHighlight(context);
-            // log(`✅ Найдено и подсвечено ${parsedCards.length} видео.`, { module: 'ParseRecommendation' });
+            // --- 2. Парсинг и подсветка ---
+            await removeParserHighlights(context);
 
-            // --- 3. TODO: Скрапинг данных (в следующем шаге) ---
-            // const scrapedData = await scrapeCards(context, parsedCards);
-            // log(`💾 Скрапинг завершён. Получено данных по ${scrapedData.length} видео.`, { module: 'ParseRecommendation' });
+            const parseResult = await parseAndHighlight(context);
+            const highlightedCount = parseResult.highlightedCount;
+            const scrapedData = parseResult.scrapedData || [];
 
-            // --- 4. TODO: Сохранение данных (в следующем шаге) ---
-            // await saveData(context, scrapedData);
+            log(`✅ Найдено и подсвечено ${highlightedCount} видео.`, { module: 'ParseRecommendation' });
+
+            // Для отладки: логируем количество полученных HTML
+            log(`📄 Получено HTML-кодов карточек: ${scrapedData?.length || 0}`, { module: 'ParseRecommendation' });
+
+            if (scrapedData.length > 0) {
+                log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });
+                try {
+                    // Передаем извлеченные данные в IndexManager
+                    updateIndexManager(scrapedData);
+                    log(`✅ Индексы IndexManager успешно обновлены.`, { module: 'ParseRecommendation' });
+                } catch (indexUpdateErr) {
+                    log(`❌ Ошибка обновления индексов IndexManager: ${indexUpdateErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    // Не прерываем сценарий из-за ошибки обновления индексов, это вторично
+                }
+            } else {
+                log(`ℹ️ Нет новых данных для обновления индексов.`, { module: 'ParseRecommendation' });
+            }
+            // --- 4. Загрузить данные в таблицу
+            if (scrapedData.length > 0) {
+                log(`💾 Сохранение ${scrapedData.length} записей в таблицу...`, { module: 'ParseRecommendation' });
+                try {
+                    // Добавляем временной штамп, если его нет
+                    const dataToSave = scrapedData.map(item => ({
+                        ...item,
+                        timestamp: item.timestamp || Date.now() // Добавляем timestamp, если отсутствует
+                    }));
+
+                    // Используем tableAdapter для сохранения данных
+                    // Предполагается, что tableAdapter.addBatch существует
+                    if (typeof tableAdapter.addBatch === 'function') {
+                        await tableAdapter.addBatch(dataToSave);
+                        log(`✅ ${dataToSave.length} записей успешно сохранены в таблицу.`, { module: 'ParseRecommendation' });
+                    } else if (typeof tableAdapter.add === 'function') {
+                        // Если addBatch нет, добавляем по одной (менее эффективно)
+                        log(`⚠️ tableAdapter.addBatch не найден, сохраняем по одной записи...`, { module: 'ParseRecommendation', level: 'warn' });
+                        let savedCount = 0;
+                        for (const item of dataToSave) {
+                            try {
+                                await tableAdapter.add(item);
+                                savedCount++;
+                            } catch (addItemErr) {
+                                log(`❌ Ошибка сохранения одной записи: ${addItemErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                                // Не прерываем весь процесс из-за одной ошибки
+                            }
+                        }
+                        log(`✅ ${savedCount}/${dataToSave.length} записей успешно сохранены в таблицу (по одной).`, { module: 'ParseRecommendation' });
+                    } else {
+                        throw new Error("Адаптер таблицы не поддерживает методы добавления (add/addBatch)");
+                    }
+
+                } catch (saveErr) {
+                    log(`❌ Ошибка сохранения данных в таблицу: ${saveErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    // Не прерываем сценарий из-за ошибки сохранения, это вторично
+                }
+            } else {
+                log(`ℹ️ Нет новых данных для сохранения в таблицу.`, { module: 'ParseRecommendation' });
+            }
+
+            // --- 5. Выбор следующего видео
+            if (scrapedData.length > 0) {
+                log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
+                try {
+                    // Получаем ID текущего видео (источника)
+                    let currentSourceVideoId = 'unknown_source';
+                    if (typeof tabId === 'number' && tabId > 0) {
+                        try {
+                            const tab = await chrome.tabs.get(tabId);
+                            const url = new URL(tab.url);
+                            currentSourceVideoId = url.searchParams.get('v') || 'unknown_source_from_url';
+                        } catch (urlErr) {
+                            log(`⚠️ Ошибка получения текущего videoId из URL: ${urlErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                        }
+                    }
+                    log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
+
+                    // 👇 НОВОЕ: Получаем необходимые зависимости из IndexManager
+                    const indexSnapshot = getStateSnapshot(); // Получаем копию состояния
+                    const dependencies = {
+                        visitedSourceVideoIds: indexSnapshot.visitedVideoIds, // Это Set<sourceVideoId>
+                        channelVideoCounts: indexSnapshot.channelVideoCounts, // Это Map<channel, count>
+                        channelToVideoIds: indexSnapshot.channelToVideoIds // Это Map<channel, Set<videoId>>
+                    };
+
+                    // 👇 НОВОЕ: Получаем режим выбора из параметров сценария
+                    // Убедитесь, что params.mode содержит 'current_recommendations' или 'all_videos'
+                    // Если в UI у вас другие значения, их нужно преобразовать
+                    const selectionModeInternal = params.mode || 'all_videos'; // Дефолтный режим
+
+                    // 👇 ИСПРАВЛЕННЫЙ ВЫЗОВ selectNextVideo
+                    const nextVideoId = await selectNextVideo(
+                        dependencies,              // 1. Объект с зависимостями
+                        currentSourceVideoId,      // 2. ID текущего видео (источника)
+                        selectionModeInternal,     // 3. Режим выбора
+                        scrapedData,               // 4. Данные для 'current_recommendations'
+                        context                    // 5. Контекст для логирования (log)
+                    );
+
+                    if (nextVideoId) {
+                        log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
+                        // TODO: Здесь будет логика перехода на nextVideoId в следующем шаге
+                    } else {
+                        log(`⚠️ Не удалось выбрать следующее видео.`, { module: 'ParseRecommendation', level: 'warn' });
+                    }
+                } catch (selectErr) {
+                    log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                    console.error("[ParseRecommendation] Stack trace ошибки выбора:", selectErr); // Для отладки
+                }
+            } else {
+                log(`ℹ️ Нет данных для выбора следующего видео.`, { module: 'ParseRecommendation' });
+            }
 
             log(`🎉 Сценарий "Парсинг рекомендаций" успешно завершён.`, { module: 'ParseRecommendation' });
 
         } catch (error) {
+            console.error("[ParseRecommendation] Поймано исключение:", error); // <-- Лог ошибок
+
             if (error.message === 'Сценарий остановлен пользователем.') {
                 log(`⏹️ Сценарий "Парсинг рекомендаций" остановлен пользователем.`, { module: 'ParseRecommendation', level: 'warn' });
             } else {
