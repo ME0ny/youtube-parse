@@ -25,6 +25,7 @@
                 "content/modules/scroller.js",
                 "content/modules/parser.js",
                 "content/modules/scraper.js",
+                "content/modules/video-checker.js",
                 "content/content.js"
             ],
             "run_at": "document_idle"

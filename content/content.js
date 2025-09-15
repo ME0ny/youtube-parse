@@ -150,6 +150,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // keep channel open for async response
     }
 
+    if (request.action === "checkVideoAvailability") {
+        console.log("[Content Script] Получен запрос на проверку доступности видео.");
+        (async () => {
+            try {
+                // Вызываем функцию из модуля video-checker
+                const isAvailable = window.ytVideoChecker.isCurrentVideoAvailable();
+                console.log(`[Content Script] Видео ${isAvailable ? 'доступно' : 'недоступно'}.`);
+                sendResponse({ status: "success", isAvailable: isAvailable });
+            } catch (err) {
+                console.error("[Content Script] Ошибка проверки доступности видео:", err);
+                sendResponse({ status: "error", message: err.message, isAvailable: true }); // В случае ошибки считаем доступным
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
 
     console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });

@@ -5,7 +5,7 @@ import { parseAndHighlight, removeParserHighlights } from '../core/utils/parser.
 import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
 import { logger } from '../background/background.js'; // Убедись, что logger доступен
 import { tableAdapter } from '../background/background.js'; // 👈 НОВОЕ: Импорт tableAdapter
-
+import { getUnavailableVideoIds, addUnavailableVideoIds } from '../core/utils/blacklist.js';
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
  */
@@ -37,6 +37,69 @@ export const parseRecommendationScenario = {
             await abortSignal();
             log(`✅ Проверка abortSignal пройдена.`, { module: 'ParseRecommendation' });
 
+            // --- 0. НОВОЕ: Проверка доступности текущего видео ---
+            log(`🔒 Проверка доступности текущего видео...`, { module: 'ParseRecommendation' });
+            try {
+                // Получаем URL текущей вкладки
+                if (typeof tabId !== 'number' || tabId < 0) {
+                    throw new Error(`Недействительный tabId: ${tabId}`);
+                }
+                const tab = await chrome.tabs.get(tabId);
+                const currentUrl = tab.url;
+                log(`🔒 Текущий URL: ${currentUrl}`, { module: 'ParseRecommendation' });
+
+                // Извлекаем videoId из URL
+                let currentVideoId = null;
+                try {
+                    const url = new URL(currentUrl);
+                    if (url.hostname.includes('youtube.com') && url.pathname === '/watch') {
+                        currentVideoId = url.searchParams.get('v');
+                    }
+                } catch (urlErr) {
+                    console.warn("[ParseRecommendation] Ошибка разбора URL:", urlErr);
+                }
+
+                if (!currentVideoId) {
+                    log(`⚠️ Не удалось извлечь videoId из URL. Пропускаем проверку доступности.`, { module: 'ParseRecommendation', level: 'warn' });
+                    // Продолжаем выполнение
+                } else {
+                    log(`🔒 Проверяем доступность видео ID: ${currentVideoId}...`, { module: 'ParseRecommendation' });
+
+                    // Отправляем сообщение content script для проверки
+                    const checkResponse = await chrome.tabs.sendMessage(tabId, {
+                        action: "checkVideoAvailability"
+                    });
+
+                    if (checkResponse && checkResponse.status === "success") {
+                        const isAvailable = checkResponse.isAvailable;
+                        log(`🔒 Результат проверки для ${currentVideoId}: ${isAvailable ? 'Доступно' : 'Недоступно'}`, { module: 'ParseRecommendation', level: isAvailable ? 'info' : 'warn' });
+
+                        if (!isAvailable) {
+                            // Видео недоступно - добавляем в черный список
+                            log(`🔒 Видео ${currentVideoId} недоступно. Добавляем в черный список.`, { module: 'ParseRecommendation', level: 'error' });
+                            await addUnavailableVideoIds(currentVideoId);
+                            log(`🔒 Видео ${currentVideoId} добавлено в черный список недоступных.`, { module: 'ParseRecommendation', level: 'warn' });
+
+                            // Здесь можно решить, прерывать ли сценарий или продолжать
+                            // Для MVP: прерываем сценарий
+                            log(`⏹️ Сценарий остановлен из-за недоступности текущего видео (${currentVideoId}).`, { module: 'ParseRecommendation', level: 'error' });
+                            throw new Error(`Текущее видео (${currentVideoId}) недоступно. Добавлено в черный список.`);
+
+                            // Альтернатива: продолжить, но залогировать ошибку
+                            // log(`⚠️ Текущее видео недоступно, но сценарий продолжится.`, { module: 'ParseRecommendation', level: 'warn' });
+                        } else {
+                            log(`✅ Текущее видео доступно. Продолжаем выполнение.`, { module: 'ParseRecommendation' });
+                        }
+                    } else {
+                        const checkErrorMsg = checkResponse?.message || "Неизвестная ошибка проверки";
+                        log(`⚠️ Ошибка проверки доступности: ${checkErrorMsg}`, { module: 'ParseRecommendation', level: 'warn' });
+                        // Продолжаем выполнение, несмотря на ошибку проверки
+                    }
+                }
+            } catch (checkErr) {
+                log(`⚠️ Ошибка связи при проверке доступности: ${checkErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                // Продолжаем выполнение, несмотря на ошибку связи
+            }
             // --- 1. Скроллинг страницы ---
             log(`🔄 Вызов scrollPageNTimes...`, { module: 'ParseRecommendation' });
             await scrollPageNTimes(context, scrollParams.count, scrollParams.delayMs, scrollParams.step);
