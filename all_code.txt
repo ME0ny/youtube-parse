@@ -1,4 +1,12 @@
 
+=== START FILE: D:\разработка\youtube-parser-os\.gitignore ===
+
+node_modules/
+
+=== END FILE: D:\разработка\youtube-parser-os\.gitignore ===
+
+--------------------------------------------------------------------------------
+
 === START FILE: D:\разработка\youtube-parser-os\manifest.json ===
 
 {
@@ -415,8 +423,9 @@ export class ConsoleLogAdapter {
 === START FILE: D:\разработка\youtube-parser-os\adapters\DexieTableAdapter.js ===
 
 // adapters/DexieTableAdapter.js
-import Dexie from 'dexie';
+import Dexie from '../lib/dexie.min.js';
 
+console.log("[DexieTableAdapter] Dexie импортирован:", typeof Dexie);
 /**
  * @typedef {import('../core/types/table.types.js').VideoData} VideoData
  * @typedef {import('../core/types/table.types.js').TableAdapter} TableAdapter
@@ -441,7 +450,7 @@ export class DexieTableAdapter {
     constructor(options = {}) {
         const dbName = options.dbName ?? 'YouTubeParserOS_DB';
         this.#tableName = options.tableName ?? 'parsedVideos';
-        const version = options.version ?? 1;
+        const version = options.version ?? 2;
 
         // Создаем/открываем базу данных Dexie
         this.#db = new Dexie(dbName);
@@ -524,7 +533,24 @@ export class DexieTableAdapter {
      */
     async getFreshData() {
         try {
-            return await this.#db.table(this.#tableName).where('isImported').equals(false).or('isImported').notExists().toArray();
+            const table = this.#db.table(this.#tableName);
+
+            // В Dexie, чтобы найти записи, где поле отсутствует (undefined),
+            // мы не можем использовать equals(undefined) напрямую в where/or.
+            // Вместо этого, получим все записи и отфильтруем вручную.
+            // Это менее эффективно, но надежно.
+
+            // 1. Получаем все записи
+            const allData = await table.toArray();
+            console.log(`[DexieTableAdapter] Получено ${allData.length} записей из таблицы для фильтрации "свежих".`, { module: 'DexieTableAdapter' });
+
+            // 2. Фильтруем "свежие" записи: isImported === false или isImported === undefined
+            const freshData = allData.filter(item =>
+                item.isImported === false || item.isImported === undefined
+            );
+
+            console.log(`[DexieTableAdapter] После фильтрации "свежих" записей: ${freshData.length}.`, { module: 'DexieTableAdapter' });
+            return freshData;
         } catch (e) {
             console.error("[DexieTableAdapter] Ошибка получения свежих записей:", e);
             return [];
@@ -581,7 +607,18 @@ export class DexieTableAdapter {
      */
     async getFreshCount() {
         try {
-            return await this.#db.table(this.#tableName).where('isImported').equals(false).or('isImported').notExists().count();
+            const table = this.#db.table(this.#tableName);
+
+            // Аналогично getFreshData, но используем count()
+            const allData = await table.toArray();
+            const freshData = allData.filter(item =>
+                item.isImported === false || item.isImported === undefined
+            );
+
+            const count = freshData.length;
+
+            console.log(`[DexieTableAdapter] Получено количество свежих записей: ${count}`, { module: 'DexieTableAdapter' });
+            return count;
         } catch (e) {
             console.error("[DexieTableAdapter] Ошибка получения количества свежих записей:", e);
             return 0;
@@ -964,11 +1001,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
                 logger.info(`✅ Импортировано ${dataToImport.length} записей в tableAdapter`, { module: 'Background' });
 
-                // 👇 НОВОЕ: Обновляем IndexManager импортированными данными
+                // 👇 НОВОЕ: Обновляем IndexManager импортированными данными БЕЗ добавления в scrapedDataBuffer
                 try {
-                    logger.info(`🔄 Обновление IndexManager ${dataToImport.length} импортированными записями...`, { module: 'Background' });
-                    updateIndexManagerWithData(dataToImport); // Вызываем функцию из IndexManager
-                    logger.info(`✅ IndexManager успешно обновлен импортированными данными.`, { module: 'Background' });
+                    logger.info(`🔄 Обновление IndexManager ${dataToImport.length} импортированными записями (addToBuffer=false)...`, { module: 'Background' });
+                    // Вызываем addScrapedData с флагом addToBuffer = false
+                    updateIndexManagerWithData(dataToImport, false);
+                    logger.info(`✅ IndexManager успешно обновлен импортированными данными (без добавления в буфер).`, { module: 'Background' });
                 } catch (indexUpdateErr) {
                     // Логируем ошибку, но не прерываем основной процесс импорта
                     logger.error(`⚠️ Ошибка обновления IndexManager после импорта: ${indexUpdateErr.message}`, { module: 'Background' });
@@ -977,7 +1015,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ status: "success", count: dataToImport.length });
 
                 // 👇 НОВОЕ: Оповещаем popup о том, что данные обновились (если нужно)
-                // Это может быть полезно, если popup хочет обновить таблицу или индексы
                 // chrome.runtime.sendMessage({ type: "dataUpdated" }).catch(err => { /* ignore */ });
 
             } catch (err) {
@@ -1961,18 +1998,22 @@ export function reset() {
  * Добавляет новые данные в индексы и буфер.
  * @param {Array<Object>} newScrapedData - Массив новых объектов данных видео.
  */
-export function addScrapedData(newScrapedData) {
+export function addScrapedData(newScrapedData, addToBuffer = true) {
     if (!Array.isArray(newScrapedData) || newScrapedData.length === 0) {
         console.warn("[IndexManager] addScrapedData: Получен пустой или некорректный массив данных.");
         return;
     }
+    console.log(`[IndexManager] Добавление ${newScrapedData.length} новых записей в индексы. addToBuffer: ${addToBuffer}`, { module: 'IndexManager' });
 
-    console.log(`[IndexManager] Добавление ${newScrapedData.length} новых записей в индексы и буфер.`);
+    // 1. Добавляем в буфер, если addToBuffer === true
+    if (addToBuffer) {
+        scrapedDataBuffer.push(...newScrapedData);
+        console.log(`[IndexManager] Добавлено ${newScrapedData.length} записей в scrapedDataBuffer. Новый размер буфера: ${scrapedDataBuffer.length}`, { module: 'IndexManager' });
+    } else {
+        console.log(`[IndexManager] Пропущено добавление в scrapedDataBuffer (addToBuffer=false).`, { module: 'IndexManager' });
+    }
 
-    // 1. Добавляем в буфер
-    scrapedDataBuffer.push(...newScrapedData);
-
-    // 2. Обновляем индексы
+    // 2. Обновляем индексы (это всегда нужно делать)
     for (const video of newScrapedData) {
         // visitedVideoIds обновляется, если sourceVideoId является "посещенным"
         // Но в данном случае sourceVideoId - это видео, С КОТОРОГО мы пришли.
@@ -1984,26 +2025,32 @@ export function addScrapedData(newScrapedData) {
         // Для MVP: visitedVideoIds отслеживает sourceVideoId (откуда пришли).
         if (video.sourceVideoId) {
             visitedVideoIds.add(video.sourceVideoId);
+            // console.log(`[IndexManager] Добавлен sourceVideoId в visitedVideoIds: ${video.sourceVideoId}`, { module: 'IndexManager' });
         }
 
-        // channelVideoCounts и channelToVideoIds обновляются для найденных видео
+        // channelVideoCounts обновляется
         const channel = video.channelName || 'Неизвестный канал';
         const currentCount = channelVideoCounts.get(channel) || 0;
         channelVideoCounts.set(channel, currentCount + 1);
+        // console.log(`[IndexManager] Обновлен channelVideoCounts для канала ${channel}: ${currentCount} -> ${currentCount + 1}`, { module: 'IndexManager' });
 
+        // channelToVideoIds обновляется
         if (!channelToVideoIds.has(channel)) {
             channelToVideoIds.set(channel, new Set());
         }
         if (video.videoId) {
             channelToVideoIds.get(channel).add(video.videoId);
+            // console.log(`[IndexManager] Добавлен videoId в channelToVideoIds для канала ${channel}: ${video.videoId}`, { module: 'IndexManager' });
         }
     }
 
-    console.log(`[IndexManager] Индексы обновлены. Новый размер буфера: ${scrapedDataBuffer.length}`);
-    console.log(`[IndexManager] visitedVideoIds.size: ${visitedVideoIds.size}`);
-    console.log(`[IndexManager] channelVideoCounts.size: ${channelVideoCounts.size}`);
-    console.log(`[IndexManager] channelToVideoIds.size: ${channelToVideoIds.size}`);
+    console.log(`[IndexManager] Индексы обновлены.`, { module: 'IndexManager' });
+    console.log(`[IndexManager] visitedVideoIds.size: ${visitedVideoIds.size}`, { module: 'IndexManager' });
+    console.log(`[IndexManager] channelVideoCounts.size: ${channelVideoCounts.size}`, { module: 'IndexManager' });
+    console.log(`[IndexManager] channelToVideoIds.size: ${channelToVideoIds.size}`, { module: 'IndexManager' });
 
+    // 3. Оповещаем подписчиков об обновлении индексов/буфера
+    // broadcastDataUpdate(); // Убираем, так как это делает tableAdapter
 }
 
 /**

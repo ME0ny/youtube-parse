@@ -44,13 +44,65 @@ function scrapeCardsFromElements(cardElements, sourceVideoId = 'unknown') {
             const metadataRows = el.querySelectorAll('.yt-content-metadata-view-model__metadata-row');
             for (const row of metadataRows) {
                 const rowText = row.textContent || '';
+                // console.log(`[Content Module Scraper Debug] Проверка строки метаданных: "${rowText}"`); // <-- Лог для отладки
+
                 // Проверяем на наличие просмотров (английский и русский), игнорируя дату после "•"
-                // Пример: "21M views • 5 days ago" -> "21M views"
-                if (/\b\d+([\.,]?\d+)*\s*[KMBkmb]?\.?\s*(views?|просмотра?|просмотров)/i.test(rowText)) {
-                    // Берем текст до первого "•" и убираем лишнее
-                    const viewsPart = rowText.split('•')[0].trim();
-                    views = viewsPart;
-                    break; // Нашли, выходим
+                // Примеры: "21M views • 5 days ago", "195 тыс. просмотров • 2 дня назад"
+                // Учитываем неразрывные пробелы (\u00A0) и обычные пробелы
+                const normalizedText = rowText.replace(/\u00A0/g, ' '); // Заменяем неразрывный пробел на обычный для поиска
+
+                // Паттерн для поиска: число + (опционально K/M/B или тыс./млн./млрд.) + (views/view/просмотр/просмотра/просмотров)
+                // \b - граница слова
+                // [\d\s\u00A0,.]+ - одна или более цифра, пробел, неразрывный пробел, запятая или точка
+                // (?:K|M|B|k|m|b|тыс\.?|млн\.?|млрд\.?) - не сохраняющая группа для множителей
+                // \s* - ноль или более пробельных символов
+                // (?:views?|просмотра?|просмотров|view) - не сохраняющая группа для слов "views", "view", "просмотр", "просмотра", "просмотров"
+                // .*? - ленивый захват всего до "•" или конца строки
+                // (?:\s*•.*)? - не сохраняющая группа для " • ..." в конце, опциональная
+                // $ - конец строки (опционально, так как текст может продолжаться)
+                const viewsPattern = /([\d\s\u00A0,.]+(?:K|M|B|k|m|b|тыс\.?|млн\.?|млрд\.?)?\s*(?:views?|просмотра?|просмотров|view))/i;
+
+                const match = normalizedText.match(viewsPattern);
+
+                if (match) {
+                    // match[1] содержит найденную подстроку с числом и словом
+                    let viewsPart = match[1].trim();
+                    // console.log(`[Content Module Scraper Debug] Найдена потенциальная строка просмотров: "${viewsPart}"`); // <-- Лог для отладки
+
+                    // Убираем слово "views/view/просмотр/просмотра/просмотров" из строки
+                    // Это делает результат чище, как в предыдущем коде
+                    viewsPart = viewsPart
+                        .replace(/\s*(?:views?|просмотра?|просмотров|view)\s*$/i, '') // Убираем слово в конце
+                        .trim();
+
+                    // Берем часть до "•", если она есть (на случай, если паттерн захватил больше)
+                    const parts = viewsPart.split('•');
+                    views = parts[0].trim();
+
+                    // console.log(`[Content Module Scraper Debug] Извлечены просмотры: "${views}"`); // <-- Лог для отладки
+                    break; // Нашли, выходим из цикла
+                }
+            }
+            // Если views всё ещё 'Неизвестно', попробуем упрощённый подход, как в предыдущем коде
+            if (views === 'Неизвестно') {
+                // console.log(`[Content Module Scraper Debug] Простой поиск по ключевым словам...`); // <-- Лог для отладки
+                for (const row of metadataRows) {
+                    const rowText = row.textContent || '';
+                    const normalizedText = rowText.replace(/\u00A0/g, ' ');
+                    // Простая проверка на наличие ключевых слов
+                    if (/\b(?:views?|просмотра?|просмотров|view)\b/i.test(normalizedText)) {
+                        // console.log(`[Content Module Scraper Debug] Найдено ключевое слово в: "${normalizedText}"`); // <-- Лог для отладки
+                        // Берем часть до "•"
+                        const parts = normalizedText.split('•');
+                        const potentialViews = parts[0].trim();
+                        // Простая очистка: убираем всё после последнего слова, похожего на "views/просмотры"
+                        const cleaned = potentialViews.replace(/\s*(?:views?|просмотра?|просмотров|view)\s*$/i, '').trim();
+                        if (cleaned) {
+                            views = cleaned;
+                            // console.log(`[Content Module Scraper Debug] Извлечены просмотры (простой способ): "${views}"`); // <-- Лог для отладки
+                            break;
+                        }
+                    }
                 }
             }
 
