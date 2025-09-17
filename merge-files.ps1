@@ -11,7 +11,7 @@ $mediaExtensions = @(
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".ico",
     ".mp3", ".wav", ".flac", ".aac", ".ogg",
     ".mp4", ".avi", ".mov", ".mkv", ".wmv", ".webm",
-    ".pdf", ".psd", ".ai", ".eps"
+    ".pdf", ".psd", ".ai", ".eps", ".csv"
 )
 
 # Directories to exclude (relative to the script's location)

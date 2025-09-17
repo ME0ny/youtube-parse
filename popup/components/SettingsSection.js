@@ -137,19 +137,32 @@ export class SettingsSection {
     }
 
     parseCSV(text) {
-        const lines = text.split(/\r?\n/);
+        console.log("[SettingsSection] Начало parseCSV");
+        const lines = text.split(/\r?\n/).filter(line => line.trim() !== ''); // Убираем пустые строки
+        console.log("[SettingsSection] Всего строк после фильтрации пустых:", lines.length);
         if (lines.length === 0) {
+            console.log("[SettingsSection] Файл пуст");
             throw new Error('Пустой файл');
         }
 
-        // Определяем разделитель: сначала пробуем ';', затем ','
+        // Определяем разделитель: сначала пробуем '\t', затем ';'
         let delimiter = ';';
-        if (lines[0].includes(',') && !lines[0].includes(';')) {
-            delimiter = ',';
+        const firstLine = lines[0];
+        if (firstLine.includes('\t')) {
+            delimiter = '\t';
+        } else if (firstLine.includes(',')) {
+            delimiter = ','; // Добавляем поддержку запятой, если другие разделители не найдены
         }
+        console.log("[SettingsSection] Определён разделитель:", delimiter === '\t' ? '\\t' : delimiter);
 
-        const headers = lines[0].split(delimiter).map(h => h.trim().toLowerCase());
+        const headersLine = lines[0];
+        console.log("[SettingsSection] Строка заголовков:", headersLine);
 
+        // --- НОВОЕ: Парсинг заголовков с учётом кавычек ---
+        const headers = this.#parseCsvLine(headersLine, delimiter);
+        console.log("[SettingsSection] Распарсенные заголовки:", headers);
+
+        // Определяем необходимые поля и их индексы
         const required = ['название', 'id', 'просмотры', 'канал', 'исходное видео', 'миниатюра'];
         const fieldMap = {
             'название': 'title',
@@ -162,42 +175,90 @@ export class SettingsSection {
 
         const indices = {};
         required.forEach(field => {
-            const index = headers.findIndex(h => h === field);
+            // Ищем заголовок, игнорируя регистр и окружающие пробелы
+            const index = headers.findIndex(h => h.trim().toLowerCase() === field);
             if (index === -1) {
                 console.error("[SettingsSection] Не найдена колонка:", field);
                 throw new Error(`Не найдена колонка: ${field}`);
             }
             indices[field] = index;
+            console.log(`[SettingsSection] Индекс для '${field}':`, index);
         });
 
         const data = [];
+        // Обрабатываем строки данных (начиная со второй строки)
         for (let i = 1; i < lines.length; i++) {
             const line = lines[i].trim();
             if (!line) {
+                console.log(`[SettingsSection] Пропущена пустая строка ${i}`);
                 continue;
             }
-            const cells = line.split(delimiter).map(cell => {
-                // Убираем окружающие кавычки, если они есть
-                let trimmed = cell.trim();
-                if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-                    trimmed = trimmed.substring(1, trimmed.length - 1);
-                }
-                return trimmed;
-            });
+            console.log(`[SettingsSection] Обработка строки ${i}:`, line);
 
-            if (cells.length < headers.length) {
-                console.warn(`[SettingsSection] Недостаточно ячеек в строке ${i}, пропускаем`);
+            // --- НОВОЕ: Парсинг строки данных с учётом кавычек ---
+            const cells = this.#parseCsvLine(line, delimiter);
+            console.log(`[SettingsSection] Распарсенные ячейки строки ${i}:`, cells);
+
+            if (cells.length < required.length) {
+                console.warn(`[SettingsSection] Недостаточно ячеек в строке ${i} (ожидается ${required.length}, получено ${cells.length}), пропускаем`);
                 continue; // Пропускаем строки с недостаточным количеством ячеек
             }
 
             const item = {};
             required.forEach(field => {
                 const index = indices[field];
+                // --- НОВОЕ: trim() и удаление кавычек происходит внутри #parseCsvLine ---
                 item[fieldMap[field]] = cells[index] ? cells[index] : '';
             });
             data.push(item);
+            console.log(`[SettingsSection] Добавлена запись из строки ${i}:`, item);
         }
+        console.log("[SettingsSection] Парсинг CSV завершён. Всего записей:", data.length);
         return data;
+    }
+
+    /**
+     * Вспомогательный метод для парсинга одной строки CSV/TSV с учётом кавычек.
+     * @param {string} line - Строка для парсинга.
+     * @param {string} delimiter - Разделитель.
+     * @returns {string[]} Массив значений ячеек.
+     * @private
+     */
+    #parseCsvLine(line, delimiter) {
+        const values = [];
+        let currentValue = '';
+        let insideQuotes = false;
+        let i = 0;
+
+        while (i < line.length) {
+            const char = line[i];
+
+            if (char === '"') {
+                if (insideQuotes && i + 1 < line.length && line[i + 1] === '"') {
+                    // Двойная кавычка внутри кавычек -> это экранированная кавычка
+                    currentValue += '"';
+                    i += 2; // Пропускаем обе кавычки
+                } else {
+                    // Открывающая или закрывающая кавычка
+                    insideQuotes = !insideQuotes;
+                    i++; // Пропускаем кавычку
+                }
+            } else if (char === delimiter && !insideQuotes) {
+                // Разделитель вне кавычек -> конец значения
+                values.push(currentValue.trim());
+                currentValue = '';
+                i++;
+            } else {
+                // Обычный символ
+                currentValue += char;
+                i++;
+            }
+        }
+
+        // Добавляем последнее значение
+        values.push(currentValue.trim());
+
+        return values;
     }
 
     dispatchEvent(type, detail) {

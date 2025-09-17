@@ -294,16 +294,29 @@ class PopupApp {
     }
 
     async handleCopyTable() {
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: '📤 Подготовка таблицы для копирования...', level: 'info' } }));
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: '📤 Подготовка таблицы для копирования (CSV с ";")...', level: 'info' } }));
+
         try {
-            const response = await chrome.runtime.sendMessage({ action: "copyTableData" });
-            if (response.status === "success") {
-                await navigator.clipboard.writeText(response.data);
-                document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Таблица скопирована в буфер обмена', level: 'success' } }));
+            // 1. Отправляем сообщение в background для получения данных
+            const response = await chrome.runtime.sendMessage({ action: "copyTableDataAsCSV" }); // Новое сообщение
+
+            if (response && response.status === "success") {
+                // 2. Получаем данные в формате CSV из ответа
+                const csvContent = response.data; // Ожидаем, что данные уже в нужном формате
+
+                // 3. Копируем в буфер обмена
+                await navigator.clipboard.writeText(csvContent);
+
+                const lines = csvContent.split('\n').filter(line => line.trim() !== '').length;
+                const dataLines = lines > 1 ? lines - 1 : 0; // Вычитаем заголовок
+
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Таблица скопирована в буфер обмена (${dataLines} строк)`, level: 'success' } }));
             } else {
-                throw new Error(response.message);
+                const errorMsg = response?.message || 'Неизвестная ошибка';
+                throw new Error(errorMsg);
             }
         } catch (err) {
+            console.error("[PopupApp] Ошибка копирования таблицы:", err);
             document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка копирования таблицы: ${err.message}`, level: 'error' } }));
         }
     }

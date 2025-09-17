@@ -435,6 +435,64 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "copyTableDataAsCSV") {
+        (async () => {
+            try {
+                logger.info("📥 Получен запрос на копирование таблицы в формате CSV (;)", { module: 'Background' });
+
+                // 1. Получаем все данные из tableAdapter
+                const data = await tableAdapter.getAll();
+                logger.info(`📥 Получено ${data.length} записей из tableAdapter для копирования`, { module: 'Background' });
+
+                // 2. Фильтруем, оставляя только "свежие" данные (не импортированные)
+                const freshData = data.filter(v => !v.isImported);
+                logger.info(`📋 Отобрано ${freshData.length} свежих записей для копирования`, { module: 'Background' });
+
+                if (freshData.length === 0) {
+                    logger.warn("📋 Нет свежих данных для копирования", { module: 'Background' });
+                    sendResponse({ status: "success", data: "" });
+                    return;
+                }
+
+                // 3. Подготавливаем заголовки (всегда в кавычках, как в примере)
+                const headers = ['Название', 'ID', 'Просмотры', 'Канал', 'Исходное видео', 'Миниатюра'];
+                const escapeHeader = (header) => {
+                    // Всегда оборачиваем заголовки в кавычки и экранируем внутренние "
+                    return `"${String(header).replace(/"/g, '""')}"`;
+                };
+                const csvHeader = headers.map(escapeHeader).join(';');
+
+                // 4. Подготавливаем строки данных
+                const escapeCSVField = (str) => {
+                    if (str == null) return '""'; // Пустое значение -> ""
+                    const s = String(str);
+                    // Всегда оборачиваем в кавычки и экранируем внутренние "
+                    return `"${s.replace(/"/g, '""')}"`;
+                };
+
+                const csvRows = freshData.map(v => [
+                    escapeCSVField(v.title || ''),
+                    escapeCSVField(v.videoId || ''),
+                    escapeCSVField(v.views || ''),
+                    escapeCSVField(v.channelName || ''), // Канал не оборачивается в кавычки, если нет спецсимволов
+                    escapeCSVField(v.sourceVideoId || ''),
+                    escapeCSVField(v.thumbnailUrl || '')
+                ].join(';'));
+
+                // 5. Формируем содержимое CSV с разделителем ";"
+                const csvContent = [csvHeader, ...csvRows].join('\n');
+
+                logger.info(`📋 Таблица подготовлена для копирования в формате CSV (;) (${freshData.length} строк)`, { module: 'Background' });
+                sendResponse({ status: "success", data: csvContent });
+
+            } catch (err) {
+                logger.error(`❌ Ошибка подготовки таблицы для копирования в формате CSV (;): ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
     // 👇 НОВОЕ: Обработчик для сброса индексов
     if (request.action === "resetIndices") {
         (async () => {
