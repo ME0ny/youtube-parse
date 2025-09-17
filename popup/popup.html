@@ -46,10 +46,13 @@
                 <!-- Импорт данных -->
                 <div class="setting-item">
                     <label class="setting-label">Импорт данных (CSV/TSV):</label>
-                    <textarea id="importTextarea" class="import-textarea"
-                        placeholder="Вставьте данные... Название;ID;Просмотры;Канал;Исходное видео;Миниатюра"></textarea>
+
+                    <!-- 👇 НОВОЕ: Input для выбора файла -->
+                    <input type="file" id="importFileInput" class="file-input" accept=".csv,.tsv,text/csv,text/tsv">
+
+                    <!-- 👇 НОВОЕ: Кнопка для запуска импорта -->
                     <div class="button-group">
-                        <button id="importDataBtn" class="btn btn-primary">📂 Загрузить данные</button>
+                        <button id="importDataBtn" class="btn btn-primary">📂 Импортировать файл</button>
                         <button id="clearImportedBtn" class="btn btn-secondary">🗑️ Очистить импортированные</button>
                     </div>
                 </div>

@@ -173,6 +173,39 @@ body {
     background: var(--border);
 }
 
+/* Стиль для input[type="file"] */
+#importFileInput {
+    width: 100%;
+    max-width: 100%;
+    /* Полная ширина */
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    background-color: var(--bg);
+    /* Цвет фона */
+    color: var(--text);
+    /* Цвет текста */
+    cursor: pointer;
+    /* Курсор-указатель */
+}
+
+#importFileInput::-webkit-file-upload-button {
+    /* Стилизуем кнопку "Выбрать файл" внутри input */
+    background-color: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    margin-right: 10px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+#importFileInput::-webkit-file-upload-button:hover {
+    background-color: var(--primary-hover);
+}
+
 /* --- 6. Группы кнопок --- */
 .button-group {
     display: flex;

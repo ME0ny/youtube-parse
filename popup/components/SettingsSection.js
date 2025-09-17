@@ -4,9 +4,14 @@ export class SettingsSection {
         this.toggleBtn = document.getElementById('toggleSettingsBtn');
         this.selectionModeRadios = document.querySelectorAll('input[name="selectionMode"]');
         this.iterationsInput = document.getElementById('iterationsInput');
-        this.importTextarea = document.getElementById('importTextarea');
+        // 👇 НОВОЕ: Сохраняем ссылку на input и кнопку
+        this.importFileInput = document.getElementById('importFileInput');
         this.importDataBtn = document.getElementById('importDataBtn');
         this.clearImportedBtn = document.getElementById('clearImportedBtn');
+
+        // 👇 НОВОЕ: Временная переменная для хранения содержимого файла
+        this.pendingFileContent = null;
+        this.pendingFileName = null;
 
         this.init();
     }
@@ -14,16 +19,17 @@ export class SettingsSection {
     init() {
         // Восстанавливаем состояние из localStorage
         this.restoreState();
-
         // Обработчики
         this.toggleBtn.addEventListener('click', () => this.toggle());
         this.selectionModeRadios.forEach(radio => {
             radio.addEventListener('change', () => this.saveState());
         });
         this.iterationsInput.addEventListener('change', () => this.saveState());
+        // 👇 НОВОЕ: Обработчик выбора файла — только сохраняет содержимое
+        this.importFileInput.addEventListener('change', (event) => this.handleFileSelected(event));
+        // 👇 НОВОЕ: Обработчик кнопки импорта — запускает импорт
         this.importDataBtn.addEventListener('click', () => this.handleImport());
         this.clearImportedBtn.addEventListener('click', () => this.handleClearImported());
-
         // Сохраняем при потере фокуса
         this.iterationsInput.addEventListener('blur', () => this.saveState());
     }
@@ -76,93 +82,50 @@ export class SettingsSection {
         }
     }
 
-    handleImport() {
-        const text = this.importTextarea.value.trim();
-
-        if (!text) {
-            this.dispatchEvent('log', { message: '❌ Нет данных для импорта', level: 'error' });
+    // 👇 НОВОЕ: Обработчик выбора файла — читает файл, но НЕ импортирует
+    handleFileSelected(event) {
+        const file = event.target.files[0];
+        if (!file) {
+            this.dispatchEvent('log', { message: '❌ Файл не выбран', level: 'error' });
             return;
         }
 
-        try {
-            const data = this.parseCSV(text);
-
-            if (data.length === 0) {
-                this.dispatchEvent('log', { message: '❌ Нет данных для импорта после парсинга', level: 'error' });
-                return;
-            }
-
-            const dataWithFlag = data.map((item, index) => {
-                const newItem = {
-                    ...item,
-                    isImported: true, // Добавляем флаг
-                    timestamp: item.timestamp || Date.now() // Убеждаемся, что timestamp есть
-                };
-                return newItem;
-            });
-
-            this.dispatchEvent('importData', { data: dataWithFlag }); // ВАЖНО: ключ 'data'
-            this.importTextarea.value = '';
-            this.dispatchEvent('log', { message: `✅ Импортировано ${dataWithFlag.length} записей`, level: 'success' });
-        } catch (err) {
-            console.error("[SettingsSection] Ошибка импорта:", err);
-            this.dispatchEvent('log', { message: `❌ Ошибка импорта: ${err.message}`, level: 'error' });
+        // Проверка типа файла
+        if (!file.name.endsWith('.csv') && !file.name.endsWith('.tsv') && file.type !== 'text/csv' && file.type !== 'text/tsv') {
+            this.dispatchEvent('log', { message: '❌ Неподдерживаемый тип файла. Выберите .csv или .tsv', level: 'error' });
+            this.importFileInput.value = '';
+            return;
         }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            this.pendingFileContent = e.target.result;
+            this.pendingFileName = file.name;
+            this.dispatchEvent('log', { message: `✅ Файл "${file.name}" выбран. Нажмите "Импортировать файл" для начала загрузки.`, level: 'success' });
+        };
+        reader.onerror = () => {
+            this.dispatchEvent('log', { message: `❌ Ошибка чтения файла: ${file.name}`, level: 'error' });
+            this.importFileInput.value = '';
+        };
+        reader.readAsText(file);
     }
 
-    async handleClearImported() {
-        console.log("[SettingsSection] Начало handleClearImported");
-        this.dispatchEvent('log', { message: '📤 Отправка команды на очистку импортированных данных...', level: 'info' });
-
-        try {
-            // Отправляем сообщение в background
-            const response = await chrome.runtime.sendMessage({
-                action: "clearImportedTableData"
-            });
-
-            if (response && response.status === "success") {
-                console.log("[SettingsSection] Импортированные данные успешно очищены в background");
-                this.dispatchEvent('log', { message: '✅ Импортированные данные очищены', level: 'success' });
-                // Опционально: можно отправить событие, если другим компонентам нужно знать
-                // this.dispatchEvent('importedDataCleared');
-            } else {
-                const errorMsg = response?.message || 'Неизвестная ошибка';
-                console.error("[SettingsSection] Ошибка очистки в background:", errorMsg);
-                this.dispatchEvent('log', { message: `❌ Ошибка очистки: ${errorMsg}`, level: 'error' });
-            }
-        } catch (err) {
-            console.error("[SettingsSection] Ошибка отправки команды в background:", err);
-            this.dispatchEvent('log', { message: `❌ Ошибка связи: ${err.message}`, level: 'error' });
-        }
+    // 👇 ОБНОВЛЕННЫЙ: Импорт начинается ТОЛЬКО по нажатию кнопки
+    handleImport() {
+        // Просто триггерим событие. Реальную логику выполнит PopupApp.
+        this.dispatchEvent('requestImportFromFile');
     }
 
-    parseCSV(text) {
-        console.log("[SettingsSection] Начало parseCSV");
-        const lines = text.split(/\r?\n/).filter(line => line.trim() !== ''); // Убираем пустые строки
-        console.log("[SettingsSection] Всего строк после фильтрации пустых:", lines.length);
-        if (lines.length === 0) {
-            console.log("[SettingsSection] Файл пуст");
-            throw new Error('Пустой файл');
-        }
+    // 👇 НОВОЕ: Асинхронный парсер с чанками
+    async parseCSVAsync(text, fileName) {
+        const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
+        if (lines.length === 0) throw new Error('Пустой файл');
 
-        // Определяем разделитель: сначала пробуем '\t', затем ';'
         let delimiter = ';';
-        const firstLine = lines[0];
-        if (firstLine.includes('\t')) {
-            delimiter = '\t';
-        } else if (firstLine.includes(',')) {
-            delimiter = ','; // Добавляем поддержку запятой, если другие разделители не найдены
-        }
-        console.log("[SettingsSection] Определён разделитель:", delimiter === '\t' ? '\\t' : delimiter);
+        if (lines[0].includes('\t')) delimiter = '\t';
+        else if (lines[0].includes(',')) delimiter = ',';
 
-        const headersLine = lines[0];
-        console.log("[SettingsSection] Строка заголовков:", headersLine);
-
-        // --- НОВОЕ: Парсинг заголовков с учётом кавычек ---
-        const headers = this.#parseCsvLine(headersLine, delimiter);
-        console.log("[SettingsSection] Распарсенные заголовки:", headers);
-
-        // Определяем необходимые поля и их индексы
+        const headers = this.#parseCsvLine(lines[0], delimiter);
         const required = ['название', 'id', 'просмотры', 'канал', 'исходное видео', 'миниатюра'];
         const fieldMap = {
             'название': 'title',
@@ -175,90 +138,99 @@ export class SettingsSection {
 
         const indices = {};
         required.forEach(field => {
-            // Ищем заголовок, игнорируя регистр и окружающие пробелы
             const index = headers.findIndex(h => h.trim().toLowerCase() === field);
-            if (index === -1) {
-                console.error("[SettingsSection] Не найдена колонка:", field);
-                throw new Error(`Не найдена колонка: ${field}`);
-            }
+            if (index === -1) throw new Error(`Не найдена колонка: ${field}`);
             indices[field] = index;
-            console.log(`[SettingsSection] Индекс для '${field}':`, index);
         });
 
         const data = [];
-        // Обрабатываем строки данных (начиная со второй строки)
+        const totalLines = lines.length - 1; // минус заголовок
+        let processedLines = 0;
+
+        // 👇 Обрабатываем строки асинхронно, чанками по 5000
         for (let i = 1; i < lines.length; i++) {
             const line = lines[i].trim();
-            if (!line) {
-                console.log(`[SettingsSection] Пропущена пустая строка ${i}`);
-                continue;
-            }
-            console.log(`[SettingsSection] Обработка строки ${i}:`, line);
+            if (!line) continue;
 
-            // --- НОВОЕ: Парсинг строки данных с учётом кавычек ---
             const cells = this.#parseCsvLine(line, delimiter);
-            console.log(`[SettingsSection] Распарсенные ячейки строки ${i}:`, cells);
-
-            if (cells.length < required.length) {
-                console.warn(`[SettingsSection] Недостаточно ячеек в строке ${i} (ожидается ${required.length}, получено ${cells.length}), пропускаем`);
-                continue; // Пропускаем строки с недостаточным количеством ячеек
-            }
+            if (cells.length < required.length) continue;
 
             const item = {};
             required.forEach(field => {
                 const index = indices[field];
-                // --- НОВОЕ: trim() и удаление кавычек происходит внутри #parseCsvLine ---
                 item[fieldMap[field]] = cells[index] ? cells[index] : '';
             });
             data.push(item);
-            console.log(`[SettingsSection] Добавлена запись из строки ${i}:`, item);
+
+            processedLines++;
+
+            // Каждые 5000 строк — делаем паузу и показываем прогресс
+            if (processedLines % 5000 === 0) {
+                this.dispatchEvent('log', {
+                    message: `📊 Обработано ${processedLines} из ${totalLines} строк файла "${fileName}"...`,
+                    level: 'info'
+                });
+                // 👇 Отдаем управление браузеру, чтобы UI не зависал
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
         }
-        console.log("[SettingsSection] Парсинг CSV завершён. Всего записей:", data.length);
+
+        this.dispatchEvent('log', {
+            message: `✅ Парсинг файла "${fileName}" завершен. Обработано ${processedLines} строк.`,
+            level: 'success'
+        });
+
         return data;
     }
 
-    /**
-     * Вспомогательный метод для парсинга одной строки CSV/TSV с учётом кавычек.
-     * @param {string} line - Строка для парсинга.
-     * @param {string} delimiter - Разделитель.
-     * @returns {string[]} Массив значений ячеек.
-     * @private
-     */
+    // 👇 Существующий метод парсинга одной строки (без изменений)
     #parseCsvLine(line, delimiter) {
         const values = [];
         let currentValue = '';
         let insideQuotes = false;
         let i = 0;
-
         while (i < line.length) {
             const char = line[i];
-
             if (char === '"') {
                 if (insideQuotes && i + 1 < line.length && line[i + 1] === '"') {
-                    // Двойная кавычка внутри кавычек -> это экранированная кавычка
                     currentValue += '"';
-                    i += 2; // Пропускаем обе кавычки
+                    i += 2;
                 } else {
-                    // Открывающая или закрывающая кавычка
                     insideQuotes = !insideQuotes;
-                    i++; // Пропускаем кавычку
+                    i++;
                 }
             } else if (char === delimiter && !insideQuotes) {
-                // Разделитель вне кавычек -> конец значения
                 values.push(currentValue.trim());
                 currentValue = '';
                 i++;
             } else {
-                // Обычный символ
                 currentValue += char;
                 i++;
             }
         }
-
-        // Добавляем последнее значение
         values.push(currentValue.trim());
-
         return values;
+    }
+
+    async handleClearImported() {
+        console.log("[SettingsSection] Начало handleClearImported");
+        this.dispatchEvent('log', { message: '📤 Отправка команды на очистку импортированных данных...', level: 'info' });
+        try {
+            const response = await chrome.runtime.sendMessage({
+                action: "clearImportedTableData"
+            });
+            if (response && response.status === "success") {
+                console.log("[SettingsSection] Импортированные данные успешно очищены в background");
+                this.dispatchEvent('log', { message: '✅ Импортированные данные очищены', level: 'success' });
+            } else {
+                const errorMsg = response?.message || 'Неизвестная ошибка';
+                console.error("[SettingsSection] Ошибка очистки в background:", errorMsg);
+                this.dispatchEvent('log', { message: `❌ Ошибка очистки: ${errorMsg}`, level: 'error' });
+            }
+        } catch (err) {
+            console.error("[SettingsSection] Ошибка отправки команды в background:", err);
+            this.dispatchEvent('log', { message: `❌ Ошибка связи: ${err.message}`, level: 'error' });
+        }
     }
 
     dispatchEvent(type, detail) {

@@ -73,6 +73,8 @@ class PopupApp {
 
         this.runScenarioBtn.addEventListener('click', () => this.handleRunScenario());
 
+        document.addEventListener('requestImportFromFile', () => this.handleImportFromFile());
+
         // --- Слушатель сообщений от background ---
         this.addMessageListener();
     }
@@ -430,6 +432,182 @@ class PopupApp {
             // В случае ошибки оставляем кнопки в начальном состоянии (не запущено)
             this.updateScenarioControlButtons(false);
         }
+    }
+
+    async handleImportFromFile() {
+        // 1. Получаем ссылку на input
+        const fileInput = document.getElementById('importFileInput');
+        const file = fileInput?.files[0];
+
+        if (!file) {
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Файл не выбран', level: 'error' } }));
+            return;
+        }
+
+        // 2. Проверка типа файла
+        if (!file.name.endsWith('.csv') && !file.name.endsWith('.tsv')) {
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Неподдерживаемый тип файла. Выберите .csv или .tsv', level: 'error' } }));
+            fileInput.value = '';
+            return;
+        }
+
+        // 3. Читаем файл
+        try {
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `🔄 Чтение файла "${file.name}"...`, level: 'info' } }));
+            const text = await this.#readFileAsync(file);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Файл "${file.name}" прочитан. Начинаем парсинг...`, level: 'success' } }));
+
+            // 4. Парсим CSV/TSV
+            const data = this.#parseCSV(text);
+            if (data.length === 0) {
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: '❌ Нет данных для импорта после парсинга', level: 'error' } }));
+                fileInput.value = '';
+                return;
+            }
+
+            // 5. Добавляем флаг isImported
+            const dataWithFlag = data.map(item => ({
+                ...item,
+                isImported: true,
+                timestamp: item.timestamp || Date.now()
+            }));
+
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `📊 Подготовлено ${dataWithFlag.length} записей для импорта.`, level: 'info' } }));
+
+            // 6. 👇 ОТПРАВКА ДАННЫХ ЧАНКАМИ В BACKGROUND
+            await this.#importDataInChunks(dataWithFlag, file.name);
+
+            // 7. Очищаем input и обновляем таблицу
+            fileInput.value = '';
+            this.table.loadInitialData();
+
+        } catch (err) {
+            console.error("[PopupApp] Ошибка импорта файла:", err);
+            document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка импорта: ${err.message}`, level: 'error' } }));
+        }
+    }
+
+    // 👇 ВСПОМОГАТЕЛЬНЫЙ МЕТОД: Асинхронное чтение файла
+    #readFileAsync(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target.result);
+            reader.onerror = (e) => reject(new Error(`Ошибка чтения файла: ${e.target.error.message}`));
+            reader.readAsText(file);
+        });
+    }
+
+    // 👇 ВСПОМОГАТЕЛЬНЫЙ МЕТОД: Парсинг CSV (скопирован из SettingsSection.js)
+    #parseCSV(text) {
+        const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
+        if (lines.length === 0) throw new Error('Пустой файл');
+
+        let delimiter = ';';
+        if (lines[0].includes('\t')) delimiter = '\t';
+        else if (lines[0].includes(',')) delimiter = ',';
+
+        const headers = this.#parseCsvLine(lines[0], delimiter);
+
+        const required = ['название', 'id', 'просмотры', 'канал', 'исходное видео', 'миниатюра'];
+        const fieldMap = {
+            'название': 'title',
+            'id': 'videoId',
+            'просмотры': 'views',
+            'канал': 'channelName',
+            'исходное видео': 'sourceVideoId',
+            'миниатюра': 'thumbnailUrl'
+        };
+
+        const indices = {};
+        required.forEach(field => {
+            const index = headers.findIndex(h => h.trim().toLowerCase() === field);
+            if (index === -1) throw new Error(`Не найдена колонка: ${field}`);
+            indices[field] = index;
+        });
+
+        const data = [];
+        for (let i = 1; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+
+            const cells = this.#parseCsvLine(line, delimiter);
+            if (cells.length < required.length) continue;
+
+            const item = {};
+            required.forEach(field => {
+                const index = indices[field];
+                item[fieldMap[field]] = cells[index] ? cells[index] : '';
+            });
+            data.push(item);
+        }
+        return data;
+    }
+
+    // 👇 ВСПОМОГАТЕЛЬНЫЙ МЕТОД: Парсинг одной строки CSV
+    #parseCsvLine(line, delimiter) {
+        const values = [];
+        let currentValue = '';
+        let insideQuotes = false;
+        let i = 0;
+        while (i < line.length) {
+            const char = line[i];
+            if (char === '"') {
+                if (insideQuotes && i + 1 < line.length && line[i + 1] === '"') {
+                    currentValue += '"';
+                    i += 2;
+                } else {
+                    insideQuotes = !insideQuotes;
+                    i++;
+                }
+            } else if (char === delimiter && !insideQuotes) {
+                values.push(currentValue.trim());
+                currentValue = '';
+                i++;
+            } else {
+                currentValue += char;
+                i++;
+            }
+        }
+        values.push(currentValue.trim());
+        return values;
+    }
+
+    // 👇 ГЛАВНЫЙ МЕТОД: Импорт данных чанками
+    async #importDataInChunks(data, fileName) {
+        const CHUNK_SIZE = 5000; // Размер чанка. Можно настроить.
+        const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
+
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Отправка данных чанками по ${CHUNK_SIZE} записей...`, level: 'info' } }));
+
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = start + CHUNK_SIZE;
+            const chunk = data.slice(start, end);
+
+            try {
+                const response = await chrome.runtime.sendMessage({
+                    action: "importTableDataChunk",
+                    data: chunk,
+                    isLastChunk: (i === totalChunks - 1),
+                    fileName: fileName,
+                    chunkIndex: i + 1,
+                    totalChunks: totalChunks
+                });
+
+                if (response?.status === "success") {
+                    document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Чанк ${i + 1}/${totalChunks} успешно импортирован.`, level: 'success' } }));
+                } else {
+                    throw new Error(response?.message || 'Неизвестная ошибка');
+                }
+            } catch (err) {
+                console.error(`[PopupApp] Ошибка импорта чанка ${i + 1}:`, err);
+                document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка импорта чанка ${i + 1}/${totalChunks}: ${err.message}`, level: 'error' } }));
+                // Прерываем импорт при ошибке
+                return;
+            }
+        }
+
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `🎉 Импорт файла "${fileName}" успешно завершен!`, level: 'success' } }));
     }
 }
 

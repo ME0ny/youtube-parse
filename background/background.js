@@ -435,6 +435,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "importTableDataChunk") {
+        (async () => {
+            try {
+                const { data, isLastChunk, fileName, chunkIndex, totalChunks } = request;
+
+                if (!Array.isArray(data) || data.length === 0) {
+                    throw new Error("Некорректные данные для импорта");
+                }
+
+                logger.info(`📥 Импорт чанка ${chunkIndex}/${totalChunks} из файла "${fileName}"...`, { module: 'Background' });
+
+                // Добавляем чанк данных в хранилище
+                await tableAdapter.addBatch(data);
+
+                logger.info(`✅ Чанк ${chunkIndex}/${totalChunks} успешно импортирован.`, { module: 'Background' });
+
+                // Если это последний чанк, обновляем IndexManager
+                if (isLastChunk) {
+                    logger.info(`🔄 Обновление IndexManager после импорта последнего чанка...`, { module: 'Background' });
+                    try {
+                        const importedData = await tableAdapter.getAll();
+                        const importedOnly = importedData.filter(item => item.isImported);
+                        const indices = prepareImportedDataIndices(importedOnly);
+                        // 👇 ОБНОВЛЯЕМ IndexManager
+                        await initIndexManager(importedOnly); // или updateIndexManagerWithData, если нужно инкрементальное обновление
+                        logger.info(`✅ IndexManager успешно обновлен после импорта файла "${fileName}".`, { module: 'Background' });
+                    } catch (indexUpdateErr) {
+                        logger.error(`⚠️ Ошибка обновления IndexManager: ${indexUpdateErr.message}`, { module: 'Background' });
+                    }
+                }
+
+                sendResponse({ status: "success" });
+
+            } catch (err) {
+                logger.error(`❌ Ошибка импорта чанка: ${err.message}`, { module: 'Background' });
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true; // keep channel open for async response
+    }
+
     if (request.action === "copyTableDataAsCSV") {
         (async () => {
             try {
