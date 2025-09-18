@@ -27,6 +27,73 @@ function isLikelyRussian(text) {
 }
 
 /**
+ * Надежный парсер строки просмотров в число.
+ * Адаптация Python-функции parse_views_robust.
+ * @param {string} viewStr - Строка с количеством просмотров (например, "1.2M", "195 тыс. просмотров").
+ * @returns {number} Число просмотров. 0, если не удалось распарсить.
+ */
+function parseViewsRobust(viewStr) {
+    // console.log(viewStr);
+    if (!viewStr || typeof viewStr !== 'string') {
+        return 0;
+    }
+    viewStr = viewStr.trim();
+    // Случай: URL миниатюры — пропускаем
+    if (viewStr.startsWith('http') || viewStr.includes('ytimg.com')) {
+        return 0;
+    }
+    // Случай: "Неизвестно", "No", "—", "—" и подобное
+    const unknownValues = ['неизвестно', 'no', '-', '—', '', 'unknown'];
+    if (unknownValues.includes(viewStr.toLowerCase())) {
+        return 0;
+    }
+    // Определяем множители для разных суффиксов
+    const patterns = [
+        // Русский: млрд (без слова "просмотров")
+        { regex: /([\d\s\u00A0,\.]+)[\s\u00A0]*млрд\.?/i, multiplier: 1_000_000_000 },
+        // Русский: млн (без слова "просмотров")
+        { regex: /([\d\s\u00A0,\.]+)[\s\u00A0]*млн\.?/i, multiplier: 1_000_000 },
+        // Русский: тыс. (без слова "просмотров")
+        { regex: /([\d\s\u00A0,\.]+)[\s\u00A0]*тыс\.?/i, multiplier: 1_000 },
+        // Английский: B (billion)
+        { regex: /([\d\s\u00A0,\.]+)[\s\u00A0]*[Bb]/i, multiplier: 1_000_000_000 },
+        // Английский: M (million)
+        { regex: /([\d\s\u00A0,\.]+)[\s\u00A0]*[Mm]/i, multiplier: 1_000_000 },
+        // Английский: K (thousand)
+        { regex: /([\d\s\u00A0,\.]+)[\s\u00A0]*[Kk]/i, multiplier: 1_000 },
+    ];
+    for (const { regex, multiplier } of patterns) {
+        const match = viewStr.match(regex);
+        if (match) {
+            let numStr = match[1].replace(/\s/g, '').replace(',', '.');
+            try {
+                // 👇 ИСПРАВЛЕНО: Используем parseFloat и умножаем, затем Math.floor
+                const num = parseFloat(numStr);
+                if (isNaN(num)) {
+                    continue;
+                }
+                // console.log("Сработало распознавание паттерна ", num * multiplier);
+                return Math.floor(num * multiplier);
+            } catch (e) {
+                continue; // если не получилось распарсить — пробуем дальше
+            }
+        }
+    }
+    // Случай: просто число (возможно, с "просмотров" или без)
+    const digitsOnly = viewStr.replace(/[^\d]/g, '');
+    if (digitsOnly) {
+        try {
+            // console.log("Паттерн не сработал ", parseInt(digitsOnly, 10));
+            return parseInt(digitsOnly, 10);
+        } catch (e) {
+            // pass
+        }
+    }
+    // Если ничего не подошло — возвращаем 0
+    return 0;
+}
+
+/**
  * Выбирает следующее видео для перехода по алгоритму "минимизация количества видео на канал".
  *
  * @param {Object} dependencies - Зависимости для работы функции.
@@ -204,13 +271,45 @@ export async function selectNextVideo(
             candidateChannelsMap.get(channel).videos.push(video);
         }
 
-        const sortedCandidateChannels = Array.from(candidateChannelsMap.entries())
-            .map(([name, data]) => ({ name, ...data }))
-            .sort((a, b) => a.count - b.count);
+        // 👇 НОВОЕ: Получаем массив каналов
+        const candidateChannelsArray = Array.from(candidateChannelsMap.entries())
+            .map(([name, data]) => ({ name, ...data }));
+
+        // 👇 НОВОЕ: Сортируем сначала по глобальному количеству видео (count)
+        candidateChannelsArray.sort((a, b) => a.count - b.count);
+
+        // 👇 НОВОЕ: Дополнительная сортировка для каналов с count === 1
+        // Находим индекс первого канала с count > 1
+        const firstNonSingleIndex = candidateChannelsArray.findIndex(channel => channel.count > 1);
+        const singleVideoChannelsEndIndex = firstNonSingleIndex === -1 ? candidateChannelsArray.length : firstNonSingleIndex;
+
+        // Сортируем подмассив каналов с count === 1 по просмотрам их видео (по убыванию)
+        if (singleVideoChannelsEndIndex > 0) {
+            const singleVideoChannels = candidateChannelsArray.slice(0, singleVideoChannelsEndIndex);
+            singleVideoChannels.sort((a, b) => {
+                // Берем первое (и единственное) видео из списка для каждого канала
+                const videoA = a.videos[0];
+                const videoB = b.videos[0];
+                const viewsA = parseViewsRobust(videoA.views || '');
+                const viewsB = parseViewsRobust(videoB.views || '');
+                // Сортируем по убыванию просмотров
+                return viewsB - viewsA;
+            });
+            // Заменяем отсортированный подмассив в основном массиве
+            candidateChannelsArray.splice(0, singleVideoChannelsEndIndex, ...singleVideoChannels);
+        }
+
+        // 👇 Переименовываем для ясности
+        const sortedCandidateChannels = candidateChannelsArray;
 
         log(`📊 Каналы кандидатов отсортированы по глобальному количеству видео (первые 10):`, { module: 'VideoSelector' });
         sortedCandidateChannels.slice(0, 10).forEach((c, i) => {
             log(`   ${i + 1}. ${c.name} (${c.count})`, { module: 'VideoSelector' });
+            // 👇 ДОПОЛНИТЕЛЬНО: Для каналов с одним видео логируем просмотры
+            if (c.count === 1 && c.videos.length > 0) {
+                const viewsNum = parseViewsRobust(c.videos[0].views || '');
+                log(`      👁️  Просмотры: ${viewsNum}`, { module: 'VideoSelector' });
+            }
         });
 
         // --- 5. Поиск подходящего видео ---

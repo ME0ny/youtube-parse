@@ -574,13 +574,15 @@ class PopupApp {
 
     // 👇 ГЛАВНЫЙ МЕТОД: Импорт данных чанками
     async #importDataInChunks(data, fileName) {
-        const CHUNK_SIZE = 5000; // Размер чанка. Можно настроить.
+        const CHUNK_SIZE = 5000;
+        const CONCURRENT_REQUESTS = 5; // Количество одновременных запросов
         const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
 
-        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Отправка данных чанками по ${CHUNK_SIZE} записей...`, level: 'info' } }));
+        document.dispatchEvent(new CustomEvent('log', { detail: { message: `📤 Отправка данных чанками по ${CHUNK_SIZE} записей с параллельной обработкой...`, level: 'info' } }));
 
-        for (let i = 0; i < totalChunks; i++) {
-            const start = i * CHUNK_SIZE;
+        // Функция для обработки одного чанка
+        const processChunk = async (chunkIndex) => {
+            const start = chunkIndex * CHUNK_SIZE;
             const end = start + CHUNK_SIZE;
             const chunk = data.slice(start, end);
 
@@ -588,22 +590,44 @@ class PopupApp {
                 const response = await chrome.runtime.sendMessage({
                     action: "importTableDataChunk",
                     data: chunk,
-                    isLastChunk: (i === totalChunks - 1),
+                    isLastChunk: (chunkIndex === totalChunks - 1),
                     fileName: fileName,
-                    chunkIndex: i + 1,
+                    chunkIndex: chunkIndex + 1,
                     totalChunks: totalChunks
                 });
 
                 if (response?.status === "success") {
-                    document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Чанк ${i + 1}/${totalChunks} успешно импортирован.`, level: 'success' } }));
+                    return { success: true, chunkIndex: chunkIndex + 1 };
                 } else {
                     throw new Error(response?.message || 'Неизвестная ошибка');
                 }
             } catch (err) {
-                console.error(`[PopupApp] Ошибка импорта чанка ${i + 1}:`, err);
-                document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка импорта чанка ${i + 1}/${totalChunks}: ${err.message}`, level: 'error' } }));
-                // Прерываем импорт при ошибке
-                return;
+                return { success: false, chunkIndex: chunkIndex + 1, error: err.message };
+            }
+        };
+
+        // Обрабатываем чанки пачками
+        for (let i = 0; i < totalChunks; i += CONCURRENT_REQUESTS) {
+            const chunkBatch = [];
+            for (let j = i; j < Math.min(i + CONCURRENT_REQUESTS, totalChunks); j++) {
+                chunkBatch.push(processChunk(j));
+            }
+
+            const results = await Promise.allSettled(chunkBatch);
+
+            // Обрабатываем результаты пачки
+            for (const result of results) {
+                if (result.status === 'fulfilled') {
+                    const { success, chunkIndex, error } = result.value;
+                    if (success) {
+                        document.dispatchEvent(new CustomEvent('log', { detail: { message: `✅ Чанк ${chunkIndex}/${totalChunks} успешно импортирован.`, level: 'success' } }));
+                    } else {
+                        document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Ошибка импорта чанка ${chunkIndex}/${totalChunks}: ${error}`, level: 'error' } }));
+                    }
+                } else {
+                    // Обработка ошибки самой функции processChunk (маловероятно)
+                    document.dispatchEvent(new CustomEvent('log', { detail: { message: `❌ Критическая ошибка при обработке чанка: ${result.reason?.message}`, level: 'error' } }));
+                }
             }
         }
 
