@@ -136,17 +136,14 @@ const last10RussianChannelCounts = [];
  * @param {Function} log - Функция логирования из контекста сценария.
  */
 export function updateRussianChannelMetric(russianChannelCount, log) {
-    // 1. Добавляем новое значение в массив
     last10RussianChannelCounts.push(russianChannelCount);
-    // 2. Если элементов больше 10, удаляем самый старый (первый)
     if (last10RussianChannelCounts.length > 10) {
         last10RussianChannelCounts.shift();
     }
-    // 3. Рассчитываем среднее значение
     const sum = last10RussianChannelCounts.reduce((acc, val) => acc + val, 0);
     const average = last10RussianChannelCounts.length > 0 ? sum / last10RussianChannelCounts.length : 0;
     const roundedAverage = parseFloat(average.toFixed(2));
-    // 4. Определяем уровень и сообщение
+
     let level = 'info';
     let message = '';
     if (roundedAverage > 7) {
@@ -159,8 +156,9 @@ export function updateRussianChannelMetric(russianChannelCount, log) {
         level = 'error';
         message = `❌ Проблема: Среднее количество новых русских каналов: ${roundedAverage}`;
     }
-    // 5. Логируем результат
+
     log(message, { module: 'Metrics', level: level });
-    // 6. (Опционально) Логируем историю для отладки
-    // log(`📊 История последних значений: [${last10RussianChannelCounts.join(', ')}]`, { module: 'Metrics', level: 'debug' });
+
+    // 👇 ВОЗВРАЩАЕМ текущее среднее значение
+    return roundedAverage;
 }

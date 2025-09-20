@@ -129,6 +129,7 @@ export const parseRecommendationScenario = {
                     log(`📊 Расчет метрик новых каналов...`, { module: 'ParseRecommendation' });
                     const indexSnapshot = getStateSnapshot();
                     const metricsResult = calculateNewChannelsInIteration(scrapedData, indexSnapshot.channelVideoCounts, log);
+                    let currentAverage = 0;
 
                     log(`📈 Найдено новых каналов в этой итерации: ${metricsResult.newChannelCount}`, { module: 'ParseRecommendation', level: metricsResult.newChannelCount > 0 ? 'success' : 'info' });
                     if (metricsResult.newChannelCount > 0) {
@@ -141,18 +142,19 @@ export const parseRecommendationScenario = {
                                 log // <-- Логгер
                             );
                             log(`🇷🇺 Среди ${russianMetrics.totalChannels} новых каналов, русскими являются ${russianMetrics.russianChannelCount} (${russianMetrics.ratio}%).`, { module: 'ParseRecommendation', level: 'success' });
-                            updateRussianChannelMetric(russianMetrics.russianChannelCount, log);
-                            if (russianMetrics.russianChannelList.length > 0) {
-                                log(`🇷🇺 Список русских каналов: ${russianMetrics.russianChannelList.join(', ')}`, { module: 'ParseRecommendation' });
-                            }
+                            currentAverage = updateRussianChannelMetric(russianMetrics.russianChannelCount, log);
+                            // if (russianMetrics.russianChannelList.length > 0) {
+                            //     log(`🇷🇺 Список русских каналов: ${russianMetrics.russianChannelList.join(', ')}`, { module: 'ParseRecommendation' });
+                            // }
                         } catch (russianErr) {
                             log(`⚠️ Ошибка анализа русскости каналов: ${russianErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
                         }
                     }
                     else {
-                        updateRussianChannelMetric(0, log);
+                        currentAverage = updateRussianChannelMetric(0, log);
                     }
-
+                    log(`Проверяем currentAverage ${currentAverage}`, { module: 'ParseRecommendation', level: 'warn' });
+                    logger.updateMetric('russianChannelAverage', currentAverage, { format: '2' });
 
                     // --- 3. Обновление индексов IndexManager ---
                     log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });

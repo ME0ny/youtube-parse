@@ -138,6 +138,43 @@ export class Logger {
         this.#notifySubscribers({ type: 'CLEAR_LOGS' });
     }
 
+    /**
+     * Отправляет событие обновления метрики в UI.
+     * @param {string} metricName - Название метрики (например, 'russianChannelAverage').
+     * @param {number} value - Значение метрики.
+     * @param {Object} [options] - Дополнительные опции.
+     * @param {string} [options.format] - Формат отображения (например, '.2f').
+    */
+    async updateMetric(metricName, value, options = {}) {
+        const formattedValue = options.format ? value.toFixed(parseFloat(options.format)) : value;
+        const entry = {
+            type: 'UPDATE_METRIC',
+            metricName,
+            value,
+            formattedValue,
+            options
+        };
+        console.log("[Logger] updateMetric: Подготовка к отправке события в popup:", entry);
+        // 👇 Отправляем сообщение в popup (если в background)
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+            try {
+                chrome.runtime.sendMessage({
+                    type: "updateMetric",
+                    metric: entry
+                }).catch(err => {
+                    if (!chrome.runtime.lastError) {
+                        console.debug("Ошибка при отправке updateMetric в popup:", err);
+                    }
+                });
+                console.log("[Logger] updateMetric: Событие успешно отправлено в popup.");
+            } catch (syncSendError) {
+                console.debug("Синхронная ошибка при вызове sendMessage (updateMetric):", syncSendError);
+            }
+        }
+        // 👇 Также уведомляем подписчиков (на случай, если кто-то внутри background слушает)
+        this.#notifySubscribers(entry);
+    }
+
     // --- Вспомогательные методы ---
 
     /**

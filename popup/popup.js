@@ -4,6 +4,7 @@ import { SettingsSection } from './components/SettingsSection.js';
 import { ControlSection } from './components/ControlSection.js';
 import { LogSection } from './components/LogSection.js';
 import { TableSection } from './components/TableSection.js';
+import { MetricIndicator } from './components/MetricIndicator.js';
 
 class PopupApp {
     constructor() {
@@ -50,6 +51,8 @@ class PopupApp {
         this.logs = new LogSection();
         this.table = new TableSection();
 
+        this.metricIndicator = new MetricIndicator('russianChannelMetricIndicator');
+
         // Инициируем загрузку начальных данных для компонентов
         // Это заменяет старые updateLogs и updateTable
         this.logs.loadInitialLogs();
@@ -77,6 +80,8 @@ class PopupApp {
 
         // --- Слушатель сообщений от background ---
         this.addMessageListener();
+
+
     }
 
     saveSettings() {
@@ -148,6 +153,17 @@ class PopupApp {
                 // Логируем сообщение от сценария, если оно есть
                 if (request.message) {
                     document.dispatchEvent(new CustomEvent('log', { detail: { message: request.message, level: request.level || 'info' } }));
+                }
+                return;
+            }
+
+            if (request.type === "updateMetric" && request.metric) {
+                console.log("[PopupApp] Получено событие updateMetric:", request.metric);
+                // Передаем событие в компонент MetricIndicator
+                if (this.metricIndicator && typeof this.metricIndicator.handleUpdateMetric === 'function') {
+                    this.metricIndicator.handleUpdateMetric(request.metric);
+                } else {
+                    console.warn("[PopupApp] Компонент metricIndicator не инициализирован или не имеет метода handleUpdateMetric");
                 }
                 return;
             }
