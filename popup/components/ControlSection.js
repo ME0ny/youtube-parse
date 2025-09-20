@@ -119,11 +119,15 @@ export class ControlSection {
                 console.log("[ControlSection] === Состояние индексов IndexManager ===");
 
                 // Выводим данные из объекта state с пояснениями
-                console.log(`scrapedDataBuffer:`, `${state.scrapedDataBuffer_count} элементов`, state.scrapedDataBuffer_sample);
-                console.log(`visitedVideoIds:`, `${state.visitedVideoIds_count} элементов`, state.visitedVideoIds_sample);
-                console.log(`channelVideoCounts:`, `${state.channelVideoCounts_count} элементов`, state.channelVideoCounts_sample);
-                console.log(`channelToVideoIds:`, `${state.channelToVideoIds_count} элементов`, state.channelToVideoIds_sample);
-
+                // 👇 ОБНОВЛЕНО: Выводим только первые 10 элементов для каждой структуры
+                console.log(`scrapedDataBuffer:`, `${state.scrapedDataBuffer_count} элементов`, state.scrapedDataBuffer_sample.slice(0, 10));
+                console.log(`visitedVideoIds:`, `${state.visitedVideoIds_count} элементов`, Array.from(state.visitedVideoIds_sample).slice(0, 10));
+                console.log(`channelVideoCounts:`, `${state.channelVideoCounts_count} элементов`, Object.fromEntries(
+                    Object.entries(state.channelVideoCounts_sample).slice(0, 10)
+                ));
+                console.log(`channelToVideoIds:`, `${state.channelToVideoIds_count} элементов`, Object.fromEntries(
+                    Object.entries(state.channelToVideoIds_sample).slice(0, 10).map(([k, v]) => [k, v.slice(0, 3)])
+                ));
                 console.log("[ControlSection] === Конец состояния индексов ===");
 
                 document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Состояние индексов выведено в консоль background', level: 'success' } }));

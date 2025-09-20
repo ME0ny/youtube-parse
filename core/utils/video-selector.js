@@ -379,3 +379,68 @@ export async function selectNextVideo(
         return null;
     }
 }
+
+/**
+ * Выбирает видео из канала, у которого ровно 1 видео в базе, предпочтительно русского.
+ * @param {Object} dependencies - Зависимости.
+ * @param {Map<string, number>} dependencies.channelVideoCounts - Глобальный счетчик видео по каналам.
+ * @param {Set<string>} dependencies.visitedVideoIds - Множество посещенных videoId.
+ * @param {Array<Object>} dependencies.scrapedDataBuffer - Буфер последних спарсенных видео.
+ * @param {Object} context - Контекст для логирования.
+ * @returns {string | null} videoId выбранного видео или null.
+ */
+export function selectVideoFromSingleVideoChannel(dependencies, context) {
+    const { channelVideoCounts, visitedVideoIds, scrapedDataBuffer } = dependencies;
+    const { log } = context;
+
+    log(`🎯 Начинаем выбор видео из каналов с ровно 1 видео...`, { module: 'VideoSelector' });
+
+    // --- Шаг 1: Фильтруем ТОЛЬКО русские видео ---
+    const russianVideos = scrapedDataBuffer.filter(video =>
+        video.title && isLikelyRussian(video.title)
+    );
+    log(`🔤 Найдено русских видео в буфере: ${russianVideos.length}`, { module: 'VideoSelector' });
+
+    // --- Шаг 2: Фильтруем ТОЛЬКО каналы с channelVideoCounts === 1 ---
+    const singleVideoChannels = new Set();
+    for (const [channel, count] of channelVideoCounts.entries()) {
+        if (count === 1) {
+            singleVideoChannels.add(channel);
+        }
+    }
+    log(`🆕 Найдено каналов с ровно 1 видео в базе: ${singleVideoChannels.size}`, { module: 'VideoSelector' });
+
+    // --- Шаг 3: Фильтруем видео из singleVideoChannels + не в visitedVideoIds ---
+    const filterCandidates = (videoList) => {
+        return videoList.filter(video => {
+            const channel = video.channelName || 'Неизвестный канал';
+            const isSingleVideoChannel = singleVideoChannels.has(channel);
+            const isNotVisited = !visitedVideoIds.has(video.videoId);
+            return isSingleVideoChannel && isNotVisited;
+        });
+    };
+
+    // --- Попытка 1: Русские видео из каналов с 1 видео ---
+    const russianSingleVideoCandidates = filterCandidates(russianVideos);
+    log(`✅ Кандидатов (русские + 1 видео + не посещено): ${russianSingleVideoCandidates.length}`, { module: 'VideoSelector' });
+
+    if (russianSingleVideoCandidates.length > 0) {
+        const selected = russianSingleVideoCandidates[0]; // или Math.random()
+        log(`🎉 Выбрано видео (приоритет: русский канал): ${selected.videoId} из "${selected.channelName}"`, { module: 'VideoSelector', level: 'success' });
+        return selected.videoId;
+    }
+
+    // --- Попытка 2: Любые видео из каналов с 1 видео (игнорируем русскость) ---
+    const allSingleVideoCandidates = filterCandidates(scrapedDataBuffer);
+    log(`⚠️ Кандидатов (любые + 1 видео + не посещено): ${allSingleVideoCandidates.length}`, { module: 'VideoSelector' });
+
+    if (allSingleVideoCandidates.length > 0) {
+        const selected = allSingleVideoCandidates[0]; // или Math.random()
+        log(`🎲 Выбрано видео (fallback: любой канал): ${selected.videoId} из "${selected.channelName}"`, { module: 'VideoSelector', level: 'warn' });
+        return selected.videoId;
+    }
+
+    // --- Попытка 3: Ничего не найдено ---
+    log(`❌ Не удалось найти подходящее видео из каналов с 1 видео.`, { module: 'VideoSelector', level: 'error' });
+    return null;
+}

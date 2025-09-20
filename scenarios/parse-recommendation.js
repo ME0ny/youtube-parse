@@ -9,7 +9,8 @@ import { selectNextVideo, isLikelyRussian } from '../core/utils/video-selector.j
 import { getStateSnapshot } from '../core/index-manager.js';
 import { navigateToVideo } from '../core/utils/navigator.js';
 import { calculateNewChannelsInIteration, calculateRussianChannelRatio, updateRussianChannelMetric } from '../core/utils/metrics.js'; // <-- НОВЫЙ ИМПОРТ
-
+import { selectVideoFromSingleVideoChannel } from '../core/utils/video-selector.js';
+import { resetRussianChannelMetric } from '../core/utils/metrics.js';
 
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
@@ -35,6 +36,8 @@ export const parseRecommendationScenario = {
         };
         const selectionModeInternal = params.mode || 'all_videos';
         const maxRetriesPerIteration = 3; // Максимальное количество попыток на одну итерацию
+
+        let restartCounter = 0;
 
         log(`🚀 Сценарий "Парсинг рекомендаций" запущен.`, { module: 'ParseRecommendation' });
         log(`🔢 Запрошено итераций: ${totalRequestedIterations}`, { module: 'ParseRecommendation' });
@@ -156,6 +159,17 @@ export const parseRecommendationScenario = {
                     log(`Проверяем currentAverage ${currentAverage}`, { module: 'ParseRecommendation', level: 'warn' });
                     logger.updateMetric('russianChannelAverage', currentAverage, { format: '2' });
 
+                    if (currentAverage >= 7) {
+                        restartCounter = 0;
+                        log(`🔄 Счетчик перезапусков сброшен (currentAverage > 7).`, { module: 'ParseRecommendation', level: 'success' });
+                    } else if (currentAverage < 5) {
+                        restartCounter = 2;
+                        log(`🔄 Счетчик перезапусков установлен в 2 (currentAverage < 5).`, { module: 'ParseRecommendation', level: 'error' });
+                    } else {
+                        restartCounter++;
+                        log(`🔄 Счетчик перезапусков увеличен до ${restartCounter} (currentAverage <= 7).`, { module: 'ParseRecommendation', level: 'warn' });
+                    }
+
                     // --- 3. Обновление индексов IndexManager ---
                     log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });
                     try {
@@ -199,70 +213,100 @@ export const parseRecommendationScenario = {
 
                     // --- 5. Выбор следующего видео ---
                     let nextVideoId = null;
-                    log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
-
-                    // Получаем ID текущего видео (источника)
-                    let currentSourceVideoId = 'unknown_source';
-                    if (typeof tabId === 'number' && tabId > 0) {
+                    if (restartCounter >= 2) {
+                        log(`🚀 Счетчик перезапусков >= 2. Используем альтернативный выбор видео.`, { module: 'ParseRecommendation', level: 'warn' });
                         try {
-                            const tab = await chrome.tabs.get(tabId);
-                            const url = new URL(tab.url);
-                            currentSourceVideoId = url.searchParams.get('v') || 'unknown_source_from_url';
-                        } catch (urlErr) {
-                            log(`⚠️ Ошибка получения текущего videoId из URL: ${urlErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                            // Получаем зависимости
+                            const indexSnapshot = getStateSnapshot();
+                            const dependencies = {
+                                channelVideoCounts: indexSnapshot.channelVideoCounts,
+                                visitedVideoIds: indexSnapshot.visitedVideoIds,
+                                scrapedDataBuffer: indexSnapshot.scrapedDataBuffer
+                            };
+
+                            // Выбираем видео через selectVideoFromSingleVideoChannel
+                            nextVideoId = selectVideoFromSingleVideoChannel(dependencies, context);
+
+                            if (nextVideoId) {
+                                log(`🎯 Альтернативный выбор успешен: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
+                                // 👇 Сбрасываем метрику
+                                resetRussianChannelMetric();
+                                log(`🔄 Метрика last10RussianChannelCounts сброшена.`, { module: 'ParseRecommendation', level: 'info' });
+                            } else {
+                                log(`⚠️ Альтернативный выбор не дал результата. Используем основной алгоритм.`, { module: 'ParseRecommendation', level: 'warn' });
+                            }
+                        } catch (altErr) {
+                            log(`❌ Ошибка альтернативного выбора видео: ${altErr.message}`, { module: 'ParseRecommendation', level: 'error' });
                         }
                     }
-                    log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
+                    else {
+                        // --- 5. Выбор следующего видео ---
 
-                    // Получаем необходимые зависимости из IndexManager
-                    // const indexSnapshot = getStateSnapshot();
-                    const dependencies = {
-                        visitedSourceVideoIds: indexSnapshot.visitedVideoIds,
-                        channelVideoCounts: indexSnapshot.channelVideoCounts,
-                        channelToVideoIds: indexSnapshot.channelToVideoIds
-                    };
+                        log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
 
-                    // Попытка выбора видео с повторами в случае недоступности выбранного
-                    let selectionAttempt = 1;
-                    const maxSelectionRetries = 5; // Лимит попыток выбора, если видео недоступно
-                    let selectionSuccessful = false;
-
-                    while (selectionAttempt <= maxSelectionRetries && !selectionSuccessful) {
-                        log(`🔍 Попытка выбора видео ${selectionAttempt}/${maxSelectionRetries}...`, { module: 'ParseRecommendation' });
-
-                        try {
-                            const tempNextVideoId = await selectNextVideo(
-                                dependencies,
-                                currentSourceVideoId,
-                                selectionModeInternal,
-                                scrapedData,
-                                context
-                            );
-
-                            if (!tempNextVideoId) {
-                                log(`⚠️ selectNextVideo не вернул ID видео.`, { module: 'ParseRecommendation', level: 'warn' });
-                                break; // Нет кандидатов, выходим из цикла выбора
+                        // Получаем ID текущего видео (источника)
+                        let currentSourceVideoId = 'unknown_source';
+                        if (typeof tabId === 'number' && tabId > 0) {
+                            try {
+                                const tab = await chrome.tabs.get(tabId);
+                                const url = new URL(tab.url);
+                                currentSourceVideoId = url.searchParams.get('v') || 'unknown_source_from_url';
+                            } catch (urlErr) {
+                                log(`⚠️ Ошибка получения текущего videoId из URL: ${urlErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
                             }
+                        }
+                        log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
 
-                            // Проверяем, не находится ли выбранное видео в черном списке
-                            const unavailableIds = await getUnavailableVideoIds();
-                            if (unavailableIds.has(tempNextVideoId)) {
-                                log(`⚠️ Выбранное видео ${tempNextVideoId} находится в черном списке. Повторяем выбор.`, { module: 'ParseRecommendation', level: 'warn' });
-                                selectionAttempt++;
-                                if (selectionAttempt > maxSelectionRetries) {
-                                    log(`❌ Достигнут лимит попыток выбора. Не удалось выбрать доступное видео.`, { module: 'ParseRecommendation', level: 'error' });
+                        // Получаем необходимые зависимости из IndexManager
+                        // const indexSnapshot = getStateSnapshot();
+                        const dependencies = {
+                            visitedSourceVideoIds: indexSnapshot.visitedVideoIds,
+                            channelVideoCounts: indexSnapshot.channelVideoCounts,
+                            channelToVideoIds: indexSnapshot.channelToVideoIds
+                        };
+
+                        // Попытка выбора видео с повторами в случае недоступности выбранного
+                        let selectionAttempt = 1;
+                        const maxSelectionRetries = 5; // Лимит попыток выбора, если видео недоступно
+                        let selectionSuccessful = false;
+
+                        while (selectionAttempt <= maxSelectionRetries && !selectionSuccessful) {
+                            log(`🔍 Попытка выбора видео ${selectionAttempt}/${maxSelectionRetries}...`, { module: 'ParseRecommendation' });
+
+                            try {
+                                const tempNextVideoId = await selectNextVideo(
+                                    dependencies,
+                                    currentSourceVideoId,
+                                    selectionModeInternal,
+                                    scrapedData,
+                                    context
+                                );
+
+                                if (!tempNextVideoId) {
+                                    log(`⚠️ selectNextVideo не вернул ID видео.`, { module: 'ParseRecommendation', level: 'warn' });
+                                    break; // Нет кандидатов, выходим из цикла выбора
                                 }
-                                continue; // Продолжаем цикл выбора
+
+                                // Проверяем, не находится ли выбранное видео в черном списке
+                                const unavailableIds = await getUnavailableVideoIds();
+                                if (unavailableIds.has(tempNextVideoId)) {
+                                    log(`⚠️ Выбранное видео ${tempNextVideoId} находится в черном списке. Повторяем выбор.`, { module: 'ParseRecommendation', level: 'warn' });
+                                    selectionAttempt++;
+                                    if (selectionAttempt > maxSelectionRetries) {
+                                        log(`❌ Достигнут лимит попыток выбора. Не удалось выбрать доступное видео.`, { module: 'ParseRecommendation', level: 'error' });
+                                    }
+                                    continue; // Продолжаем цикл выбора
+                                }
+
+                                // Если видео доступно, используем его
+                                nextVideoId = tempNextVideoId;
+                                selectionSuccessful = true;
+                                log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
+
+                            } catch (selectErr) {
+                                log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                                break; // Прерываем попытки выбора при ошибке
                             }
-
-                            // Если видео доступно, используем его
-                            nextVideoId = tempNextVideoId;
-                            selectionSuccessful = true;
-                            log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
-
-                        } catch (selectErr) {
-                            log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
-                            break; // Прерываем попытки выбора при ошибке
                         }
                     }
 
