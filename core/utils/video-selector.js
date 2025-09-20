@@ -19,7 +19,7 @@ import { getUnavailableVideoIds } from './blacklist.js';
  * @param {string} text - Текст для проверки.
  * @returns {boolean} true, если текст содержит кириллицу и НЕ содержит маркеров других языков, иначе false.
  */
-function isLikelyRussian(text) {
+export function isLikelyRussian(text) {
     if (!text || typeof text !== 'string') return false;
 
     // --- 1. Проверяем наличие ЛЮБОЙ кириллицы ---

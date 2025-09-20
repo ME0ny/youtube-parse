@@ -429,3 +429,34 @@ body {
     background-color: var(--border);
     border-radius: 3px;
 }
+
+/* --- 12. Индикатор метрики русских каналов --- */
+.metric-indicator {
+    display: inline-block;
+    margin-left: 16px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: white;
+    background-color: var(--secondary);
+    /* Серый по умолчанию */
+    vertical-align: middle;
+    line-height: 1;
+}
+
+/* Цвета индикатора */
+.metric-indicator.good {
+    background-color: var(--success);
+    /* Зеленый */
+}
+
+.metric-indicator.warning {
+    background-color: var(--warning);
+    /* Желтый */
+}
+
+.metric-indicator.bad {
+    background-color: var(--danger);
+    /* Красный */
+}

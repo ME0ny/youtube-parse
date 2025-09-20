@@ -5,9 +5,11 @@ import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
 import { logger } from '../background/background.js';
 import { tableAdapter } from '../background/background.js';
 import { getUnavailableVideoIds, addUnavailableVideoIds } from '../core/utils/blacklist.js';
-import { selectNextVideo } from '../core/utils/video-selector.js';
+import { selectNextVideo, isLikelyRussian } from '../core/utils/video-selector.js';
 import { getStateSnapshot } from '../core/index-manager.js';
 import { navigateToVideo } from '../core/utils/navigator.js';
+import { calculateNewChannelsInIteration, calculateRussianChannelRatio, updateRussianChannelMetric } from '../core/utils/metrics.js'; // <-- НОВЫЙ ИМПОРТ
+
 
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
@@ -123,6 +125,35 @@ export const parseRecommendationScenario = {
                         break; // Выходим из while(attempt...)
                     }
 
+                    // Расчет метрики по уникальности каналов
+                    log(`📊 Расчет метрик новых каналов...`, { module: 'ParseRecommendation' });
+                    const indexSnapshot = getStateSnapshot();
+                    const metricsResult = calculateNewChannelsInIteration(scrapedData, indexSnapshot.channelVideoCounts, log);
+
+                    log(`📈 Найдено новых каналов в этой итерации: ${metricsResult.newChannelCount}`, { module: 'ParseRecommendation', level: metricsResult.newChannelCount > 0 ? 'success' : 'info' });
+                    if (metricsResult.newChannelCount > 0) {
+                        log(`🇷🇺 Анализ "русскости" новых каналов (первая итерация)...`, { module: 'ParseRecommendation' });
+                        try {
+                            // 👇 ПЕРЕДАЕМ ТОЛЬКО newChannelNames и scrapedData
+                            const russianMetrics = calculateRussianChannelRatio(
+                                metricsResult.newChannelNames,
+                                scrapedData, // <-- Только текущая итерация
+                                log // <-- Логгер
+                            );
+                            log(`🇷🇺 Среди ${russianMetrics.totalChannels} новых каналов, русскими являются ${russianMetrics.russianChannelCount} (${russianMetrics.ratio}%).`, { module: 'ParseRecommendation', level: 'success' });
+                            updateRussianChannelMetric(russianMetrics.russianChannelCount, log);
+                            if (russianMetrics.russianChannelList.length > 0) {
+                                log(`🇷🇺 Список русских каналов: ${russianMetrics.russianChannelList.join(', ')}`, { module: 'ParseRecommendation' });
+                            }
+                        } catch (russianErr) {
+                            log(`⚠️ Ошибка анализа русскости каналов: ${russianErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                        }
+                    }
+                    else {
+                        updateRussianChannelMetric(0, log);
+                    }
+
+
                     // --- 3. Обновление индексов IndexManager ---
                     log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });
                     try {
@@ -131,6 +162,8 @@ export const parseRecommendationScenario = {
                     } catch (indexUpdateErr) {
                         log(`❌ Ошибка обновления индексов IndexManager: ${indexUpdateErr.message}`, { module: 'ParseRecommendation', level: 'error' });
                     }
+
+
 
                     // --- 4. Сохранение данных в таблицу ---
                     log(`💾 Сохранение ${scrapedData.length} записей в таблицу...`, { module: 'ParseRecommendation' });
@@ -180,7 +213,7 @@ export const parseRecommendationScenario = {
                     log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
 
                     // Получаем необходимые зависимости из IndexManager
-                    const indexSnapshot = getStateSnapshot();
+                    // const indexSnapshot = getStateSnapshot();
                     const dependencies = {
                         visitedSourceVideoIds: indexSnapshot.visitedVideoIds,
                         channelVideoCounts: indexSnapshot.channelVideoCounts,

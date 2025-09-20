@@ -120,4 +120,5 @@ export class LogSection {
         this.container.appendChild(entry);
         // Прокрутка НЕ происходит здесь
     }
+
 }
