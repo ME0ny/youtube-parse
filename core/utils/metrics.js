@@ -2,6 +2,9 @@
 
 import { isLikelyRussian } from './video-selector.js';
 
+/** @type {Array<Object>} */
+export const goldNicheVideos = [];
+
 /**
  * Рассчитывает количество новых каналов, найденных в текущей итерации.
  * @param {Array<Object>} scrapedData - Данные, полученные в текущей итерации (из последнего парсинга).

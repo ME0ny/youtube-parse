@@ -10,7 +10,7 @@ import { getStateSnapshot } from '../core/index-manager.js';
 import { navigateToVideo } from '../core/utils/navigator.js';
 import { calculateNewChannelsInIteration, calculateRussianChannelRatio, updateRussianChannelMetric } from '../core/utils/metrics.js'; // <-- НОВЫЙ ИМПОРТ
 import { selectVideoFromSingleVideoChannel } from '../core/utils/video-selector.js';
-import { resetRussianChannelMetric } from '../core/utils/metrics.js';
+import { resetRussianChannelMetric, goldNicheVideos } from '../core/utils/metrics.js';
 
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
@@ -146,9 +146,21 @@ export const parseRecommendationScenario = {
                             );
                             log(`🇷🇺 Среди ${russianMetrics.totalChannels} новых каналов, русскими являются ${russianMetrics.russianChannelCount} (${russianMetrics.ratio}%).`, { module: 'ParseRecommendation', level: 'success' });
                             currentAverage = updateRussianChannelMetric(russianMetrics.russianChannelCount, log);
-                            // if (russianMetrics.russianChannelList.length > 0) {
-                            //     log(`🇷🇺 Список русских каналов: ${russianMetrics.russianChannelList.join(', ')}`, { module: 'ParseRecommendation' });
-                            // }
+                            if (russianMetrics.russianChannelCount >= 7) {
+                                log(`🌟 Найдена "золотая" ниша! russianChannelCount = ${russianMetrics.russianChannelCount}. Сохраняем видео в кэш.`, { module: 'ParseRecommendation', level: 'success' });
+
+                                // Фильтруем видео из scrapedData, принадлежащие новым русским каналам
+                                const newRussianChannelNames = new Set(russianMetrics.russianChannelList);
+                                const videosToCache = scrapedData.filter(video =>
+                                    newRussianChannelNames.has(video.channelName)
+                                );
+
+                                // Очищаем старый кэш и добавляем новые видео
+                                goldNicheVideos.length = 0; // Очищаем массив
+                                goldNicheVideos.push(...videosToCache);
+
+                                log(`✅ В кэш "золотых" ниш добавлено ${videosToCache.length} видео из ${newRussianChannelNames.size} каналов.`, { module: 'ParseRecommendation', level: 'success' });
+                            }
                         } catch (russianErr) {
                             log(`⚠️ Ошибка анализа русскости каналов: ${russianErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
                         }
@@ -214,6 +226,7 @@ export const parseRecommendationScenario = {
                     // --- 5. Выбор следующего видео ---
                     let nextVideoId = null;
                     if (restartCounter >= 2) {
+                        restartCounter = 0;
                         log(`🚀 Счетчик перезапусков >= 2. Используем альтернативный выбор видео.`, { module: 'ParseRecommendation', level: 'warn' });
                         try {
                             // Получаем зависимости
@@ -225,8 +238,7 @@ export const parseRecommendationScenario = {
                             };
 
                             // Выбираем видео через selectVideoFromSingleVideoChannel
-                            nextVideoId = selectVideoFromSingleVideoChannel(dependencies, context);
-
+                            nextVideoId = selectVideoFromSingleVideoChannel(dependencies, context, true);
                             if (nextVideoId) {
                                 log(`🎯 Альтернативный выбор успешен: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
                                 // 👇 Сбрасываем метрику

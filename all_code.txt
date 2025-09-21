@@ -2419,6 +2419,43 @@ export class Logger {
         this.#notifySubscribers({ type: 'CLEAR_LOGS' });
     }
 
+    /**
+     * Отправляет событие обновления метрики в UI.
+     * @param {string} metricName - Название метрики (например, 'russianChannelAverage').
+     * @param {number} value - Значение метрики.
+     * @param {Object} [options] - Дополнительные опции.
+     * @param {string} [options.format] - Формат отображения (например, '.2f').
+    */
+    async updateMetric(metricName, value, options = {}) {
+        const formattedValue = options.format ? value.toFixed(parseFloat(options.format)) : value;
+        const entry = {
+            type: 'UPDATE_METRIC',
+            metricName,
+            value,
+            formattedValue,
+            options
+        };
+        console.log("[Logger] updateMetric: Подготовка к отправке события в popup:", entry);
+        // 👇 Отправляем сообщение в popup (если в background)
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+            try {
+                chrome.runtime.sendMessage({
+                    type: "updateMetric",
+                    metric: entry
+                }).catch(err => {
+                    if (!chrome.runtime.lastError) {
+                        console.debug("Ошибка при отправке updateMetric в popup:", err);
+                    }
+                });
+                console.log("[Logger] updateMetric: Событие успешно отправлено в popup.");
+            } catch (syncSendError) {
+                console.debug("Синхронная ошибка при вызове sendMessage (updateMetric):", syncSendError);
+            }
+        }
+        // 👇 Также уведомляем подписчиков (на случай, если кто-то внутри background слушает)
+        this.#notifySubscribers(entry);
+    }
+
     // --- Вспомогательные методы ---
 
     /**
@@ -2948,17 +2985,14 @@ const last10RussianChannelCounts = [];
  * @param {Function} log - Функция логирования из контекста сценария.
  */
 export function updateRussianChannelMetric(russianChannelCount, log) {
-    // 1. Добавляем новое значение в массив
     last10RussianChannelCounts.push(russianChannelCount);
-    // 2. Если элементов больше 10, удаляем самый старый (первый)
     if (last10RussianChannelCounts.length > 10) {
         last10RussianChannelCounts.shift();
     }
-    // 3. Рассчитываем среднее значение
     const sum = last10RussianChannelCounts.reduce((acc, val) => acc + val, 0);
     const average = last10RussianChannelCounts.length > 0 ? sum / last10RussianChannelCounts.length : 0;
     const roundedAverage = parseFloat(average.toFixed(2));
-    // 4. Определяем уровень и сообщение
+
     let level = 'info';
     let message = '';
     if (roundedAverage > 7) {
@@ -2971,10 +3005,20 @@ export function updateRussianChannelMetric(russianChannelCount, log) {
         level = 'error';
         message = `❌ Проблема: Среднее количество новых русских каналов: ${roundedAverage}`;
     }
-    // 5. Логируем результат
+
     log(message, { module: 'Metrics', level: level });
-    // 6. (Опционально) Логируем историю для отладки
-    // log(`📊 История последних значений: [${last10RussianChannelCounts.join(', ')}]`, { module: 'Metrics', level: 'debug' });
+
+    // 👇 ВОЗВРАЩАЕМ текущее среднее значение
+    return roundedAverage;
+}
+
+/**
+ * Сбрасывает историю последних 10 значений метрики русских каналов.
+ * Используется, например, при сбросе индексов или начале нового сеанса парсинга.
+ */
+export function resetRussianChannelMetric() {
+    last10RussianChannelCounts.length = 0; // Очищаем массив, сохраняя ссылку
+    console.log("[Metrics] История метрики русских каналов сброшена.");
 }
 
 === END FILE: D:\разработка\youtube-parser-os\core\utils\metrics.js ===
@@ -3687,6 +3731,71 @@ export async function selectNextVideo(
     }
 }
 
+/**
+ * Выбирает видео из канала, у которого ровно 1 видео в базе, предпочтительно русского.
+ * @param {Object} dependencies - Зависимости.
+ * @param {Map<string, number>} dependencies.channelVideoCounts - Глобальный счетчик видео по каналам.
+ * @param {Set<string>} dependencies.visitedVideoIds - Множество посещенных videoId.
+ * @param {Array<Object>} dependencies.scrapedDataBuffer - Буфер последних спарсенных видео.
+ * @param {Object} context - Контекст для логирования.
+ * @returns {string | null} videoId выбранного видео или null.
+ */
+export function selectVideoFromSingleVideoChannel(dependencies, context) {
+    const { channelVideoCounts, visitedVideoIds, scrapedDataBuffer } = dependencies;
+    const { log } = context;
+
+    log(`🎯 Начинаем выбор видео из каналов с ровно 1 видео...`, { module: 'VideoSelector' });
+
+    // --- Шаг 1: Фильтруем ТОЛЬКО русские видео ---
+    const russianVideos = scrapedDataBuffer.filter(video =>
+        video.title && isLikelyRussian(video.title)
+    );
+    log(`🔤 Найдено русских видео в буфере: ${russianVideos.length}`, { module: 'VideoSelector' });
+
+    // --- Шаг 2: Фильтруем ТОЛЬКО каналы с channelVideoCounts === 1 ---
+    const singleVideoChannels = new Set();
+    for (const [channel, count] of channelVideoCounts.entries()) {
+        if (count === 1) {
+            singleVideoChannels.add(channel);
+        }
+    }
+    log(`🆕 Найдено каналов с ровно 1 видео в базе: ${singleVideoChannels.size}`, { module: 'VideoSelector' });
+
+    // --- Шаг 3: Фильтруем видео из singleVideoChannels + не в visitedVideoIds ---
+    const filterCandidates = (videoList) => {
+        return videoList.filter(video => {
+            const channel = video.channelName || 'Неизвестный канал';
+            const isSingleVideoChannel = singleVideoChannels.has(channel);
+            const isNotVisited = !visitedVideoIds.has(video.videoId);
+            return isSingleVideoChannel && isNotVisited;
+        });
+    };
+
+    // --- Попытка 1: Русские видео из каналов с 1 видео ---
+    const russianSingleVideoCandidates = filterCandidates(russianVideos);
+    log(`✅ Кандидатов (русские + 1 видео + не посещено): ${russianSingleVideoCandidates.length}`, { module: 'VideoSelector' });
+
+    if (russianSingleVideoCandidates.length > 0) {
+        const selected = russianSingleVideoCandidates[0]; // или Math.random()
+        log(`🎉 Выбрано видео (приоритет: русский канал): ${selected.videoId} из "${selected.channelName}"`, { module: 'VideoSelector', level: 'success' });
+        return selected.videoId;
+    }
+
+    // --- Попытка 2: Любые видео из каналов с 1 видео (игнорируем русскость) ---
+    const allSingleVideoCandidates = filterCandidates(scrapedDataBuffer);
+    log(`⚠️ Кандидатов (любые + 1 видео + не посещено): ${allSingleVideoCandidates.length}`, { module: 'VideoSelector' });
+
+    if (allSingleVideoCandidates.length > 0) {
+        const selected = allSingleVideoCandidates[0]; // или Math.random()
+        log(`🎲 Выбрано видео (fallback: любой канал): ${selected.videoId} из "${selected.channelName}"`, { module: 'VideoSelector', level: 'warn' });
+        return selected.videoId;
+    }
+
+    // --- Попытка 3: Ничего не найдено ---
+    log(`❌ Не удалось найти подходящее видео из каналов с 1 видео.`, { module: 'VideoSelector', level: 'error' });
+    return null;
+}
+
 === END FILE: D:\разработка\youtube-parser-os\core\utils\video-selector.js ===
 
 --------------------------------------------------------------------------------
@@ -4313,6 +4422,7 @@ import { SettingsSection } from './components/SettingsSection.js';
 import { ControlSection } from './components/ControlSection.js';
 import { LogSection } from './components/LogSection.js';
 import { TableSection } from './components/TableSection.js';
+import { MetricIndicator } from './components/MetricIndicator.js';
 
 class PopupApp {
     constructor() {
@@ -4359,6 +4469,8 @@ class PopupApp {
         this.logs = new LogSection();
         this.table = new TableSection();
 
+        this.metricIndicator = new MetricIndicator('russianChannelMetricIndicator');
+
         // Инициируем загрузку начальных данных для компонентов
         // Это заменяет старые updateLogs и updateTable
         this.logs.loadInitialLogs();
@@ -4386,6 +4498,8 @@ class PopupApp {
 
         // --- Слушатель сообщений от background ---
         this.addMessageListener();
+
+
     }
 
     saveSettings() {
@@ -4457,6 +4571,17 @@ class PopupApp {
                 // Логируем сообщение от сценария, если оно есть
                 if (request.message) {
                     document.dispatchEvent(new CustomEvent('log', { detail: { message: request.message, level: request.level || 'info' } }));
+                }
+                return;
+            }
+
+            if (request.type === "updateMetric" && request.metric) {
+                console.log("[PopupApp] Получено событие updateMetric:", request.metric);
+                // Передаем событие в компонент MetricIndicator
+                if (this.metricIndicator && typeof this.metricIndicator.handleUpdateMetric === 'function') {
+                    this.metricIndicator.handleUpdateMetric(request.metric);
+                } else {
+                    console.warn("[PopupApp] Компонент metricIndicator не инициализирован или не имеет метода handleUpdateMetric");
                 }
                 return;
             }
@@ -5077,11 +5202,15 @@ export class ControlSection {
                 console.log("[ControlSection] === Состояние индексов IndexManager ===");
 
                 // Выводим данные из объекта state с пояснениями
-                console.log(`scrapedDataBuffer:`, `${state.scrapedDataBuffer_count} элементов`, state.scrapedDataBuffer_sample);
-                console.log(`visitedVideoIds:`, `${state.visitedVideoIds_count} элементов`, state.visitedVideoIds_sample);
-                console.log(`channelVideoCounts:`, `${state.channelVideoCounts_count} элементов`, state.channelVideoCounts_sample);
-                console.log(`channelToVideoIds:`, `${state.channelToVideoIds_count} элементов`, state.channelToVideoIds_sample);
-
+                // 👇 ОБНОВЛЕНО: Выводим только первые 10 элементов для каждой структуры
+                console.log(`scrapedDataBuffer:`, `${state.scrapedDataBuffer_count} элементов`, state.scrapedDataBuffer_sample.slice(0, 10));
+                console.log(`visitedVideoIds:`, `${state.visitedVideoIds_count} элементов`, Array.from(state.visitedVideoIds_sample).slice(0, 10));
+                console.log(`channelVideoCounts:`, `${state.channelVideoCounts_count} элементов`, Object.fromEntries(
+                    Object.entries(state.channelVideoCounts_sample).slice(0, 10)
+                ));
+                console.log(`channelToVideoIds:`, `${state.channelToVideoIds_count} элементов`, Object.fromEntries(
+                    Object.entries(state.channelToVideoIds_sample).slice(0, 10).map(([k, v]) => [k, v.slice(0, 3)])
+                ));
                 console.log("[ControlSection] === Конец состояния индексов ===");
 
                 document.dispatchEvent(new CustomEvent('log', { detail: { message: '✅ Состояние индексов выведено в консоль background', level: 'success' } }));
@@ -5246,6 +5375,87 @@ export class LogSection {
 }
 
 === END FILE: D:\разработка\youtube-parser-os\popup\components\LogSection.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\popup\components\MetricIndicator.js ===
+
+// popup/components/MetricIndicator.js
+
+/**
+ * Компонент для управления индикатором метрики в UI.
+ * Слушает событие 'updateMetric' и обновляет соответствующий элемент.
+ */
+export class MetricIndicator {
+    /**
+     * @param {string} elementId - ID элемента, который нужно обновлять.
+     */
+    constructor(elementId) {
+        this.element = document.getElementById(elementId);
+        if (!this.element) {
+            console.warn(`[MetricIndicator] Элемент с ID "${elementId}" не найден.`);
+            return;
+        }
+        this.init();
+    }
+
+    init() {
+        // Слушаем глобальное событие обновления метрик
+        document.addEventListener('updateMetric', (e) => {
+            this.handleUpdateMetric(e.detail);
+        });
+    }
+
+    /**
+     * Обрабатывает событие обновления метрики.
+     * @param {Object} detail - Данные события.
+     * @param {string} detail.metricName - Название метрики.
+     * @param {number} detail.value - Значение метрики.
+     * @param {string} detail.formattedValue - Отформатированное значение.
+     */
+    handleUpdateMetric(detail) {
+        if (!this.element) return;
+
+        const { metricName, value, formattedValue } = detail;
+
+        // Для метрики 'russianChannelAverage' обновляем индикатор
+        if (metricName === 'russianChannelAverage') {
+            this.updateRussianChannelIndicator(value, formattedValue);
+        }
+        // Можно добавить обработку других метрик здесь
+    }
+
+    /**
+     * Обновляет индикатор среднего количества русских каналов.
+     * @param {number} value - Сырое значение метрики.
+     * @param {string} formattedValue - Отформатированное значение для отображения.
+     */
+    updateRussianChannelIndicator(value, formattedValue) {
+        if (!this.element) return;
+
+        // Удаляем предыдущие классы состояния
+        this.element.classList.remove('good', 'warning', 'bad');
+
+        // Определяем класс состояния и текст
+        let statusClass = 'good';
+        let displayText = `${formattedValue}`;
+
+        if (value > 7) {
+            statusClass = 'good';
+        } else if (value >= 5) {
+            statusClass = 'warning';
+        } else {
+            statusClass = 'bad';
+        }
+
+        // Применяем класс состояния
+        this.element.classList.add(statusClass);
+        // Обновляем текст
+        this.element.textContent = displayText;
+    }
+}
+
+=== END FILE: D:\разработка\youtube-parser-os\popup\components\MetricIndicator.js ===
 
 --------------------------------------------------------------------------------
 
@@ -5619,7 +5829,8 @@ import { selectNextVideo, isLikelyRussian } from '../core/utils/video-selector.j
 import { getStateSnapshot } from '../core/index-manager.js';
 import { navigateToVideo } from '../core/utils/navigator.js';
 import { calculateNewChannelsInIteration, calculateRussianChannelRatio, updateRussianChannelMetric } from '../core/utils/metrics.js'; // <-- НОВЫЙ ИМПОРТ
-
+import { selectVideoFromSingleVideoChannel } from '../core/utils/video-selector.js';
+import { resetRussianChannelMetric } from '../core/utils/metrics.js';
 
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
@@ -5645,6 +5856,8 @@ export const parseRecommendationScenario = {
         };
         const selectionModeInternal = params.mode || 'all_videos';
         const maxRetriesPerIteration = 3; // Максимальное количество попыток на одну итерацию
+
+        let restartCounter = 0;
 
         log(`🚀 Сценарий "Парсинг рекомендаций" запущен.`, { module: 'ParseRecommendation' });
         log(`🔢 Запрошено итераций: ${totalRequestedIterations}`, { module: 'ParseRecommendation' });
@@ -5739,6 +5952,7 @@ export const parseRecommendationScenario = {
                     log(`📊 Расчет метрик новых каналов...`, { module: 'ParseRecommendation' });
                     const indexSnapshot = getStateSnapshot();
                     const metricsResult = calculateNewChannelsInIteration(scrapedData, indexSnapshot.channelVideoCounts, log);
+                    let currentAverage = 0;
 
                     log(`📈 Найдено новых каналов в этой итерации: ${metricsResult.newChannelCount}`, { module: 'ParseRecommendation', level: metricsResult.newChannelCount > 0 ? 'success' : 'info' });
                     if (metricsResult.newChannelCount > 0) {
@@ -5751,18 +5965,30 @@ export const parseRecommendationScenario = {
                                 log // <-- Логгер
                             );
                             log(`🇷🇺 Среди ${russianMetrics.totalChannels} новых каналов, русскими являются ${russianMetrics.russianChannelCount} (${russianMetrics.ratio}%).`, { module: 'ParseRecommendation', level: 'success' });
-                            updateRussianChannelMetric(russianMetrics.russianChannelCount, log);
-                            if (russianMetrics.russianChannelList.length > 0) {
-                                log(`🇷🇺 Список русских каналов: ${russianMetrics.russianChannelList.join(', ')}`, { module: 'ParseRecommendation' });
-                            }
+                            currentAverage = updateRussianChannelMetric(russianMetrics.russianChannelCount, log);
+                            // if (russianMetrics.russianChannelList.length > 0) {
+                            //     log(`🇷🇺 Список русских каналов: ${russianMetrics.russianChannelList.join(', ')}`, { module: 'ParseRecommendation' });
+                            // }
                         } catch (russianErr) {
                             log(`⚠️ Ошибка анализа русскости каналов: ${russianErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
                         }
                     }
                     else {
-                        updateRussianChannelMetric(0, log);
+                        currentAverage = updateRussianChannelMetric(0, log);
                     }
+                    log(`Проверяем currentAverage ${currentAverage}`, { module: 'ParseRecommendation', level: 'warn' });
+                    logger.updateMetric('russianChannelAverage', currentAverage, { format: '2' });
 
+                    if (currentAverage >= 7) {
+                        restartCounter = 0;
+                        log(`🔄 Счетчик перезапусков сброшен (currentAverage > 7).`, { module: 'ParseRecommendation', level: 'success' });
+                    } else if (currentAverage < 5) {
+                        restartCounter = 2;
+                        log(`🔄 Счетчик перезапусков установлен в 2 (currentAverage < 5).`, { module: 'ParseRecommendation', level: 'error' });
+                    } else {
+                        restartCounter++;
+                        log(`🔄 Счетчик перезапусков увеличен до ${restartCounter} (currentAverage <= 7).`, { module: 'ParseRecommendation', level: 'warn' });
+                    }
 
                     // --- 3. Обновление индексов IndexManager ---
                     log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseRecommendation' });
@@ -5807,70 +6033,100 @@ export const parseRecommendationScenario = {
 
                     // --- 5. Выбор следующего видео ---
                     let nextVideoId = null;
-                    log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
-
-                    // Получаем ID текущего видео (источника)
-                    let currentSourceVideoId = 'unknown_source';
-                    if (typeof tabId === 'number' && tabId > 0) {
+                    if (restartCounter >= 2) {
+                        log(`🚀 Счетчик перезапусков >= 2. Используем альтернативный выбор видео.`, { module: 'ParseRecommendation', level: 'warn' });
                         try {
-                            const tab = await chrome.tabs.get(tabId);
-                            const url = new URL(tab.url);
-                            currentSourceVideoId = url.searchParams.get('v') || 'unknown_source_from_url';
-                        } catch (urlErr) {
-                            log(`⚠️ Ошибка получения текущего videoId из URL: ${urlErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
+                            // Получаем зависимости
+                            const indexSnapshot = getStateSnapshot();
+                            const dependencies = {
+                                channelVideoCounts: indexSnapshot.channelVideoCounts,
+                                visitedVideoIds: indexSnapshot.visitedVideoIds,
+                                scrapedDataBuffer: indexSnapshot.scrapedDataBuffer
+                            };
+
+                            // Выбираем видео через selectVideoFromSingleVideoChannel
+                            nextVideoId = selectVideoFromSingleVideoChannel(dependencies, context);
+
+                            if (nextVideoId) {
+                                log(`🎯 Альтернативный выбор успешен: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
+                                // 👇 Сбрасываем метрику
+                                resetRussianChannelMetric();
+                                log(`🔄 Метрика last10RussianChannelCounts сброшена.`, { module: 'ParseRecommendation', level: 'info' });
+                            } else {
+                                log(`⚠️ Альтернативный выбор не дал результата. Используем основной алгоритм.`, { module: 'ParseRecommendation', level: 'warn' });
+                            }
+                        } catch (altErr) {
+                            log(`❌ Ошибка альтернативного выбора видео: ${altErr.message}`, { module: 'ParseRecommendation', level: 'error' });
                         }
                     }
-                    log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
+                    else {
+                        // --- 5. Выбор следующего видео ---
 
-                    // Получаем необходимые зависимости из IndexManager
-                    // const indexSnapshot = getStateSnapshot();
-                    const dependencies = {
-                        visitedSourceVideoIds: indexSnapshot.visitedVideoIds,
-                        channelVideoCounts: indexSnapshot.channelVideoCounts,
-                        channelToVideoIds: indexSnapshot.channelToVideoIds
-                    };
+                        log(`🤔 Попытка выбора следующего видео...`, { module: 'ParseRecommendation' });
 
-                    // Попытка выбора видео с повторами в случае недоступности выбранного
-                    let selectionAttempt = 1;
-                    const maxSelectionRetries = 5; // Лимит попыток выбора, если видео недоступно
-                    let selectionSuccessful = false;
-
-                    while (selectionAttempt <= maxSelectionRetries && !selectionSuccessful) {
-                        log(`🔍 Попытка выбора видео ${selectionAttempt}/${maxSelectionRetries}...`, { module: 'ParseRecommendation' });
-
-                        try {
-                            const tempNextVideoId = await selectNextVideo(
-                                dependencies,
-                                currentSourceVideoId,
-                                selectionModeInternal,
-                                scrapedData,
-                                context
-                            );
-
-                            if (!tempNextVideoId) {
-                                log(`⚠️ selectNextVideo не вернул ID видео.`, { module: 'ParseRecommendation', level: 'warn' });
-                                break; // Нет кандидатов, выходим из цикла выбора
+                        // Получаем ID текущего видео (источника)
+                        let currentSourceVideoId = 'unknown_source';
+                        if (typeof tabId === 'number' && tabId > 0) {
+                            try {
+                                const tab = await chrome.tabs.get(tabId);
+                                const url = new URL(tab.url);
+                                currentSourceVideoId = url.searchParams.get('v') || 'unknown_source_from_url';
+                            } catch (urlErr) {
+                                log(`⚠️ Ошибка получения текущего videoId из URL: ${urlErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
                             }
+                        }
+                        log(`📍 Текущее видео (источник): ${currentSourceVideoId}`, { module: 'ParseRecommendation' });
 
-                            // Проверяем, не находится ли выбранное видео в черном списке
-                            const unavailableIds = await getUnavailableVideoIds();
-                            if (unavailableIds.has(tempNextVideoId)) {
-                                log(`⚠️ Выбранное видео ${tempNextVideoId} находится в черном списке. Повторяем выбор.`, { module: 'ParseRecommendation', level: 'warn' });
-                                selectionAttempt++;
-                                if (selectionAttempt > maxSelectionRetries) {
-                                    log(`❌ Достигнут лимит попыток выбора. Не удалось выбрать доступное видео.`, { module: 'ParseRecommendation', level: 'error' });
+                        // Получаем необходимые зависимости из IndexManager
+                        // const indexSnapshot = getStateSnapshot();
+                        const dependencies = {
+                            visitedSourceVideoIds: indexSnapshot.visitedVideoIds,
+                            channelVideoCounts: indexSnapshot.channelVideoCounts,
+                            channelToVideoIds: indexSnapshot.channelToVideoIds
+                        };
+
+                        // Попытка выбора видео с повторами в случае недоступности выбранного
+                        let selectionAttempt = 1;
+                        const maxSelectionRetries = 5; // Лимит попыток выбора, если видео недоступно
+                        let selectionSuccessful = false;
+
+                        while (selectionAttempt <= maxSelectionRetries && !selectionSuccessful) {
+                            log(`🔍 Попытка выбора видео ${selectionAttempt}/${maxSelectionRetries}...`, { module: 'ParseRecommendation' });
+
+                            try {
+                                const tempNextVideoId = await selectNextVideo(
+                                    dependencies,
+                                    currentSourceVideoId,
+                                    selectionModeInternal,
+                                    scrapedData,
+                                    context
+                                );
+
+                                if (!tempNextVideoId) {
+                                    log(`⚠️ selectNextVideo не вернул ID видео.`, { module: 'ParseRecommendation', level: 'warn' });
+                                    break; // Нет кандидатов, выходим из цикла выбора
                                 }
-                                continue; // Продолжаем цикл выбора
+
+                                // Проверяем, не находится ли выбранное видео в черном списке
+                                const unavailableIds = await getUnavailableVideoIds();
+                                if (unavailableIds.has(tempNextVideoId)) {
+                                    log(`⚠️ Выбранное видео ${tempNextVideoId} находится в черном списке. Повторяем выбор.`, { module: 'ParseRecommendation', level: 'warn' });
+                                    selectionAttempt++;
+                                    if (selectionAttempt > maxSelectionRetries) {
+                                        log(`❌ Достигнут лимит попыток выбора. Не удалось выбрать доступное видео.`, { module: 'ParseRecommendation', level: 'error' });
+                                    }
+                                    continue; // Продолжаем цикл выбора
+                                }
+
+                                // Если видео доступно, используем его
+                                nextVideoId = tempNextVideoId;
+                                selectionSuccessful = true;
+                                log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
+
+                            } catch (selectErr) {
+                                log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
+                                break; // Прерываем попытки выбора при ошибке
                             }
-
-                            // Если видео доступно, используем его
-                            nextVideoId = tempNextVideoId;
-                            selectionSuccessful = true;
-                            log(`🎉 Выбрано следующее видео для перехода: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
-
-                        } catch (selectErr) {
-                            log(`❌ Ошибка выбора следующего видео: ${selectErr.message}`, { module: 'ParseRecommendation', level: 'error' });
-                            break; // Прерываем попытки выбора при ошибке
                         }
                     }
 

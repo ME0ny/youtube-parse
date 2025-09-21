@@ -1,7 +1,7 @@
 // core/utils/video-selector.js
 
 import { getUnavailableVideoIds } from './blacklist.js';
-
+import { goldNicheVideos } from './metrics.js';
 /**
  * @typedef {Object} VideoData
  * @property {string} videoId - Уникальный идентификатор видео.
@@ -389,14 +389,23 @@ export async function selectNextVideo(
  * @param {Object} context - Контекст для логирования.
  * @returns {string | null} videoId выбранного видео или null.
  */
-export function selectVideoFromSingleVideoChannel(dependencies, context) {
+export function selectVideoFromSingleVideoChannel(dependencies, context, useGoldNicheCache = false) {
     const { channelVideoCounts, visitedVideoIds, scrapedDataBuffer } = dependencies;
     const { log } = context;
+
+    // 👇 НОВОЕ: Используем кэш "золотых" ниш, если флаг установлен
+    let dataToUse = scrapedDataBuffer;
+    if (useGoldNicheCache && goldNicheVideos.length > 0) {
+        dataToUse = goldNicheVideos;
+        log(`🌟 Используем кэш "золотых" ниш (${goldNicheVideos.length} видео) вместо scrapedDataBuffer.`, { module: 'VideoSelector', level: 'info' });
+    } else if (useGoldNicheCache) {
+        log(`⚠️ Кэш "золотых" ниш пуст, используем scrapedDataBuffer.`, { module: 'VideoSelector', level: 'warn' });
+    }
 
     log(`🎯 Начинаем выбор видео из каналов с ровно 1 видео...`, { module: 'VideoSelector' });
 
     // --- Шаг 1: Фильтруем ТОЛЬКО русские видео ---
-    const russianVideos = scrapedDataBuffer.filter(video =>
+    const russianVideos = dataToUse.filter(video =>
         video.title && isLikelyRussian(video.title)
     );
     log(`🔤 Найдено русских видео в буфере: ${russianVideos.length}`, { module: 'VideoSelector' });
