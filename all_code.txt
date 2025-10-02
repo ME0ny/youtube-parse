@@ -38,6 +38,7 @@ node_modules/
                 "content/modules/parser.js",
                 "content/modules/scraper.js",
                 "content/modules/video-checker.js",
+                "content/modules/search-parser.js",
                 "content/content.js"
             ],
             "run_at": "document_idle"
@@ -672,6 +673,7 @@ import { testCountdownScenario } from '../scenarios/test-countdown.js';
 import { DexieTableAdapter } from '../adapters/DexieTableAdapter.js';
 import { prepareImportedDataIndices } from '../core/data-processor.js';
 import { parseRecommendationScenario } from '../scenarios/parse-recommendation.js';
+import { parseSearchResultsScenario } from '../scenarios/parse-search-results.js';
 import {
     initialize as initIndexManager,
     reset as resetIndexManager,
@@ -718,6 +720,7 @@ export const scenarioEngine = new ScenarioEngine();
 // 3. Регистрируем тестовый сценарий
 scenarioEngine.registerScenario(testCountdownScenario);
 scenarioEngine.registerScenario(parseRecommendationScenario);
+scenarioEngine.registerScenario(parseSearchResultsScenario);
 
 // --- Инициализация IndexManager ---
 // Вызывается один раз при запуске background script
@@ -890,7 +893,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     scenarioToRun = testCountdownScenario;
                     // } else if (scenarioId === '...') {
                     //     scenarioToRun = ...;
-                } else {
+                } else if (scenarioId === 'parse-search-results') { // <-- НОВАЯ СТРОКА
+                    scenarioToRun = parseSearchResultsScenario;       // <-- НОВАЯ СТРОКА
+                }
+                else {
                     throw new Error(`Неизвестный ID сценария: ${scenarioId}`);
                 }
 
@@ -1512,6 +1518,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // keep channel open for async response
     }
 
+    if (request.action === "parseAndHighlightSearch") {
+        console.log("[Content Script] === Получен запрос на парсинг поисковой выдачи ===");
+        const { searchQuery = 'unknown_search' } = request;
+        try {
+            const parsedCardElements = window.ytSearchParser.parseAndHighlight();
+            const scrapedData = window.ytSearchParser.scrapeCards(parsedCardElements, searchQuery);
+            sendResponse({
+                status: "success",
+                highlightedCount: parsedCardElements.length,
+                scrapedData: scrapedData
+            });
+        } catch (err) {
+            console.error("[Content Script] Ошибка парсинга поисковой выдачи:", err);
+            sendResponse({ status: "error", message: err.message });
+        }
+        return true;
+    }
     console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });
 
@@ -1909,6 +1932,225 @@ window.performSingleScroll = performSingleScroll;
 console.log("[Content Module Scroller] Модуль загружен и готов.");
 
 === END FILE: D:\разработка\youtube-parser-os\content\modules\scroller.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\content\modules\search-parser.js ===
+
+// content/modules/search-parser.js
+
+/**
+ * Проверяет, подсвечена ли карточка или её родитель.
+ * @param {HTMLElement} el
+ * @returns {boolean}
+ */
+function isAlreadyHighlightedOrHasHighlightedParent(el) {
+    if (el.classList.contains('video-highlighted')) return true;
+    let parent = el.parentElement;
+    while (parent) {
+        if (parent.classList?.contains('video-highlighted')) return true;
+        parent = parent.parentElement;
+    }
+    return false;
+}
+
+/**
+ * Добавляет визуальную подсветку к элементу.
+ * @param {HTMLElement} el
+ */
+function highlightElement(el) {
+    if (isAlreadyHighlightedOrHasHighlightedParent(el)) {
+        return;
+    }
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+        position: 'absolute',
+        border: '3px solid #ff4d4d',
+        pointerEvents: 'none',
+        zIndex: '999999',
+        borderRadius: '8px',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        boxShadow: '0 0 8px rgba(255, 77, 77, 0.6)',
+        boxSizing: 'border-box'
+    });
+    const computedStyle = window.getComputedStyle(el);
+    if (!computedStyle.position || computedStyle.position === 'static') {
+        el.style.position = 'relative';
+    }
+    el.style.overflow = 'visible';
+    el.appendChild(box);
+    el.classList.add('video-highlighted');
+}
+
+/**
+ * Фильтрует карточки, оставляя только видео.
+ * Исключает каналы, плейлисты, shorts, стримы и рекламу.
+ * @param {HTMLElement} card
+ * @returns {boolean}
+ */
+function isVideoCard(card) {
+    // 1. Является ли элемент рендерером видео?
+    if (!card.classList.contains('ytd-video-renderer')) {
+        return false;
+    }
+
+    // 2. Проверка на Shorts (часто имеют специфичный класс или атрибут)
+    // В поисковой выдаче Shorts могут быть в отдельном блоке, но на всякий случай проверим
+    if (card.closest('ytd-reel-item-renderer, ytd-rich-grid-media[is-shorts]')) {
+        return false;
+    }
+
+    // 3. Проверка на Live-стримы (ищем бейдж "LIVE")
+    const liveBadge = card.querySelector('yt-formatted-string[aria-label*="LIVE" i], .ytd-badge-supported-renderer[aria-label*="LIVE" i]');
+    if (liveBadge) {
+        return false;
+    }
+
+    // 4. Проверка на плейлисты (ищем ссылку с `list=` в href)
+    const videoLink = card.querySelector('a[href*="/watch?v="]');
+    if (videoLink && videoLink.href.includes('list=')) {
+        return false;
+    }
+
+    // 5. Проверка на каналы (в поиске каналы обычно имеют класс ytd-channel-renderer)
+    // Так как мы уже отфильтровали по ytd-video-renderer, это маловероятно, но оставим для надежности
+    if (card.classList.contains('ytd-channel-renderer')) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Находит и подсвечивает карточки видео в поисковой выдаче YouTube.
+ * @returns {HTMLElement[]} массив DOM-элементов карточек видео
+ */
+export function parseAndHighlightSearchResults() {
+    console.log("[Content Module SearchParser] Начинаем парсинг и подсветку поисковой выдачи...");
+
+    // Находим все потенциальные карточки видео
+    const allCards = Array.from(document.querySelectorAll('ytd-video-renderer'));
+    console.log(`[Content Module SearchParser] Найдено потенциальных карточек: ${allCards.length}`);
+
+    // Фильтруем только настоящие видео
+    const videoCards = allCards.filter(isVideoCard);
+    console.log(`[Content Module SearchParser] Отфильтровано видео: ${videoCards.length}`);
+
+    // Подсвечиваем
+    videoCards.forEach(highlightElement);
+    console.log(`[Content Module SearchParser] Подсвечено видео: ${videoCards.length}`);
+
+    return videoCards;
+}
+
+/**
+ * Удаляет подсветку, добавленную parseAndHighlightSearchResults.
+ */
+export function removeSearchHighlights() {
+    console.log("[Content Module SearchParser] Удаление подсветки поисковой выдачи...");
+    const highlightedCards = document.querySelectorAll('.video-highlighted');
+    let removedCount = 0;
+    highlightedCards.forEach(card => {
+        const highlightBoxes = card.querySelectorAll('div[style*="border: 3px solid"]');
+        highlightBoxes.forEach(box => {
+            box.remove();
+            removedCount++;
+        });
+        card.classList.remove('video-highlighted');
+    });
+    console.log(`[Content Module SearchParser] Удалено ${removedCount} элементов подсветки.`);
+}
+
+/**
+ * Извлекает данные из массива DOM-элементов карточек поисковой выдачи.
+ * @param {HTMLElement[]} cardElements - массив DOM-элементов карточек.
+ * @param {string} searchQuery - Поисковый запрос (например, "пока").
+ * @returns {Array<Object>} массив объектов с данными.
+ */
+export function scrapeSearchResults(cardElements, searchQuery = 'unknown_search') {
+    console.log(`[Content Module SearchParser] Начинаем скрапинг данных из ${cardElements.length} карточек поиска...`);
+    const scrapedData = [];
+
+    cardElements.forEach((el, index) => {
+        try {
+            // 1. Название видео
+            const titleElement = el.querySelector('#video-title');
+            const title = titleElement?.textContent?.trim() || 'Без названия';
+
+            // 2. ID видео
+            let videoId = 'Не найден';
+            const linkElement = el.querySelector('a[href*="/watch?v="]');
+            if (linkElement) {
+                try {
+                    const url = new URL(linkElement.href, window.location.origin);
+                    videoId = url.searchParams.get('v') || 'Не найден';
+                } catch (e) {
+                    console.warn(`[SearchParser] Ошибка парсинга URL для карточки ${index}:`, e);
+                }
+            }
+
+            // 3. Просмотры
+            let views = 'Неизвестно';
+            const viewsElement = el.querySelector('.inline-metadata-item');
+            if (viewsElement) {
+                // Текст может быть "594K views" или "1,2 млн просмотров"
+                views = viewsElement.textContent.trim();
+            }
+
+            // 4. Название канала
+            let channelName = 'Неизвестен';
+            const channelElement = el.querySelector('#channel-name a');
+            if (channelElement) {
+                channelName = channelElement.textContent.trim();
+            }
+
+            // 5. Миниатюра
+            let thumbnailUrl = '';
+            const thumbnailImg = el.querySelector('yt-image img');
+            if (thumbnailImg && thumbnailImg.src) {
+                thumbnailUrl = thumbnailImg.src;
+            }
+
+            // 6. Исходное видео = поисковый запрос
+            const sourceVideoId = searchQuery;
+
+            scrapedData.push({
+                title,
+                videoId,
+                views,
+                channelName,
+                sourceVideoId,
+                thumbnailUrl
+            });
+
+        } catch (err) {
+            console.error(`[SearchParser] Ошибка при скрапинге карточки ${index}:`, err);
+            scrapedData.push({
+                title: `Ошибка скрапинга ${index}`,
+                videoId: '',
+                views: '',
+                channelName: '',
+                sourceVideoId: searchQuery,
+                thumbnailUrl: ''
+            });
+        }
+    });
+
+    console.log(`[SearchParser] Скрапинг завершён. Извлечено данных: ${scrapedData.length}`);
+    return scrapedData;
+}
+
+// Экспортируем в глобальную область для использования в content.js
+window.ytSearchParser = {
+    parseAndHighlight: parseAndHighlightSearchResults,
+    removeHighlights: removeSearchHighlights,
+    scrapeCards: scrapeSearchResults
+};
+
+=== END FILE: D:\разработка\youtube-parser-os\content\modules\search-parser.js ===
 
 --------------------------------------------------------------------------------
 
@@ -2851,6 +3093,9 @@ export async function isVideoUnavailable(videoId) {
 
 import { isLikelyRussian } from './video-selector.js';
 
+/** @type {Array<Object>} */
+export const goldNicheVideos = [];
+
 /**
  * Рассчитывает количество новых каналов, найденных в текущей итерации.
  * @param {Array<Object>} scrapedData - Данные, полученные в текущей итерации (из последнего парсинга).
@@ -3347,12 +3592,51 @@ export async function scrollPageNTimes(context, count = 16, delayMs = 1500, step
 
 --------------------------------------------------------------------------------
 
+=== START FILE: D:\разработка\youtube-parser-os\core\utils\search-parser.js ===
+
+// core/utils/search-parser.js
+
+/**
+ * Отправляет сообщение в content script для парсинга поисковой выдачи.
+ * @param {Object} context - Контекст сценария.
+ * @param {string} searchQuery - Поисковый запрос.
+ * @returns {Promise<Object>} Результат парсинга.
+ */
+export async function parseAndHighlightSearch(context, searchQuery) {
+    const { log, tabId } = context;
+    if (typeof tabId !== 'number' || tabId < 0) {
+        throw new Error(`Недействительный tabId для парсинга поиска: ${tabId}`);
+    }
+    log(`🔍 Отправка запроса на парсинг поисковой выдачи по запросу: "${searchQuery}"...`, { module: 'SearchParser' });
+    try {
+        const response = await chrome.tabs.sendMessage(tabId, {
+            action: "parseAndHighlightSearch",
+            searchQuery: searchQuery
+        });
+        if (response && response.status === "success") {
+            const count = response.highlightedCount;
+            const data = response.scrapedData || [];
+            log(`✅ Парсинг поиска завершен. Найдено/подсвечено видео: ${count}, извлечено данных: ${data.length}`, { module: 'SearchParser' });
+            return response;
+        } else {
+            throw new Error(response?.message || "Неизвестная ошибка парсинга поиска");
+        }
+    } catch (err) {
+        log(`❌ Ошибка связи при парсинге поиска: ${err.message}`, { module: 'SearchParser', level: 'error' });
+        throw err;
+    }
+}
+
+=== END FILE: D:\разработка\youtube-parser-os\core\utils\search-parser.js ===
+
+--------------------------------------------------------------------------------
+
 === START FILE: D:\разработка\youtube-parser-os\core\utils\video-selector.js ===
 
 // core/utils/video-selector.js
 
 import { getUnavailableVideoIds } from './blacklist.js';
-
+import { goldNicheVideos } from './metrics.js';
 /**
  * @typedef {Object} VideoData
  * @property {string} videoId - Уникальный идентификатор видео.
@@ -3365,8 +3649,7 @@ import { getUnavailableVideoIds } from './blacklist.js';
  */
 
 /**
- * Проверяет, является ли текст, вероятно, рУССКОязычным (а не просто кириллическим).
- * Отсеивает украинские, белорусские и другие не-русские кириллические тексты по характерным символам.
+ * Проверяет, является ли текст, вероятно, русскоязычным.
  * @param {string} text - Текст для проверки.
  * @returns {boolean} true, если текст содержит кириллицу и НЕ содержит маркеров других языков, иначе false.
  */
@@ -3374,32 +3657,43 @@ export function isLikelyRussian(text) {
     if (!text || typeof text !== 'string') return false;
 
     // --- 1. Проверяем наличие ЛЮБОЙ кириллицы ---
-    // Если кириллицы вообще нет — точно не русский
     const hasCyrillic = /[\u0400-\u04FF\u0500-\u052F]/.test(text);
     if (!hasCyrillic) {
         return false;
     }
 
-    // --- 2. Проверяем наличие маркеров НЕ-РУССКОГО языка ---
-    // Украинские буквы, которых нет в русском алфавите
-    const ukrainianMarkers = /[іїєґІЇЄҐ]/;
-    // Белорусская "ў"
-    const belarusianMarkers = /[ўЎ]/;
-    // Сербская "ђ", "ћ", "џ" и т.д. (если нужно)
-    const serbianMarkers = /[ђћџЂЋЏ]/;
+    // --- 2. Определяем маркеры НЕ-РУССКОГО языка ---
 
-    // Объединяем все маркеры в один регэксп
-    const nonRussianMarkers = new RegExp(`[${ukrainianMarkers.source}${belarusianMarkers.source}${serbianMarkers.source}]`);
+    // Украинские буквы
+    const ukrainian = 'іїєґІЇЄҐ';
+    // Белорусская буква
+    const belarusian = 'ўЎ';
+    // Казахские буквы
+    const kazakh = 'қғңһөүәҚҒҢҺӨҮӘ';
+    // Киргизские буквы (кроме тех, что есть в русском)
+    const kyrgyz = 'ңүөәҢҮӨӘ';
+    // Узбекские буквы
+    const uzbek = 'ҳқҲҚ';
+    // Таджикские буквы
+    const tajik = 'ғӣқӯҳҷҒӢҚӮҲҶ';
+    // Сербские/Македонские буквы
+    const serbian = 'ђћџЂЋЏѓќѓќЃЌ';
+
+    // 👇 ИСПРАВЛЕНО: Объединяем ВСЕ маркеры в ОДИН набор символов
+    const allNonRussianChars = ukrainian + belarusian + kazakh + kyrgyz + uzbek + tajik + serbian;
+    const nonRussianMarkers = new RegExp(`[${allNonRussianChars}]`);
 
     // Если найден хотя бы один маркер — считаем, что это НЕ русский текст
     if (nonRussianMarkers.test(text)) {
         return false;
     }
 
-    // --- 3. Дополнительная проверка: наличие характерной украинской "i" (латинская) ---
-    // Украинские названия часто используют латинскую "i" вместо кириллической "і" или русской "и"
-    // Это сильный индикатор.
-    if (text.includes('i') || text.includes('I')) {
+    // --- 3. Умная проверка латинской буквы "i" ---
+    // Ищем латинскую "i" или "I", окружённую кириллическими символами (слева ИЛИ справа)
+    const cyrillicChar = '[\\u0400-\\u04FF\\u0500-\\u052F]';
+    const latinIMarker = new RegExp(`${cyrillicChar}[iI]|[iI]${cyrillicChar}`);
+
+    if (latinIMarker.test(text)) {
         return false;
     }
 
@@ -3740,14 +4034,23 @@ export async function selectNextVideo(
  * @param {Object} context - Контекст для логирования.
  * @returns {string | null} videoId выбранного видео или null.
  */
-export function selectVideoFromSingleVideoChannel(dependencies, context) {
+export function selectVideoFromSingleVideoChannel(dependencies, context, useGoldNicheCache = false) {
     const { channelVideoCounts, visitedVideoIds, scrapedDataBuffer } = dependencies;
     const { log } = context;
+
+    // 👇 НОВОЕ: Используем кэш "золотых" ниш, если флаг установлен
+    let dataToUse = scrapedDataBuffer;
+    if (useGoldNicheCache && goldNicheVideos.length > 0) {
+        dataToUse = goldNicheVideos;
+        log(`🌟 Используем кэш "золотых" ниш (${goldNicheVideos.length} видео) вместо scrapedDataBuffer.`, { module: 'VideoSelector', level: 'info' });
+    } else if (useGoldNicheCache) {
+        log(`⚠️ Кэш "золотых" ниш пуст, используем scrapedDataBuffer.`, { module: 'VideoSelector', level: 'warn' });
+    }
 
     log(`🎯 Начинаем выбор видео из каналов с ровно 1 видео...`, { module: 'VideoSelector' });
 
     // --- Шаг 1: Фильтруем ТОЛЬКО русские видео ---
-    const russianVideos = scrapedDataBuffer.filter(video =>
+    const russianVideos = dataToUse.filter(video =>
         video.title && isLikelyRussian(video.title)
     );
     log(`🔤 Найдено русских видео в буфере: ${russianVideos.length}`, { module: 'VideoSelector' });
@@ -4344,6 +4647,7 @@ body {
                     <select id="scenarioSelector" class="input-field">
                         <option value="parse-recommendation">Парсинг рекомендаций</option>
                         <option value="test-countdown">Тестовый сценарий: Обратный отсчет</option>
+                        <option value="parse-search-results">Парсинг поисковой выдачи</option>
                         <!-- В будущем можно добавить больше опций -->
                     </select>
                 </div>
@@ -5830,7 +6134,7 @@ import { getStateSnapshot } from '../core/index-manager.js';
 import { navigateToVideo } from '../core/utils/navigator.js';
 import { calculateNewChannelsInIteration, calculateRussianChannelRatio, updateRussianChannelMetric } from '../core/utils/metrics.js'; // <-- НОВЫЙ ИМПОРТ
 import { selectVideoFromSingleVideoChannel } from '../core/utils/video-selector.js';
-import { resetRussianChannelMetric } from '../core/utils/metrics.js';
+import { resetRussianChannelMetric, goldNicheVideos } from '../core/utils/metrics.js';
 
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
@@ -5966,9 +6270,21 @@ export const parseRecommendationScenario = {
                             );
                             log(`🇷🇺 Среди ${russianMetrics.totalChannels} новых каналов, русскими являются ${russianMetrics.russianChannelCount} (${russianMetrics.ratio}%).`, { module: 'ParseRecommendation', level: 'success' });
                             currentAverage = updateRussianChannelMetric(russianMetrics.russianChannelCount, log);
-                            // if (russianMetrics.russianChannelList.length > 0) {
-                            //     log(`🇷🇺 Список русских каналов: ${russianMetrics.russianChannelList.join(', ')}`, { module: 'ParseRecommendation' });
-                            // }
+                            if (russianMetrics.russianChannelCount >= 7) {
+                                log(`🌟 Найдена "золотая" ниша! russianChannelCount = ${russianMetrics.russianChannelCount}. Сохраняем видео в кэш.`, { module: 'ParseRecommendation', level: 'success' });
+
+                                // Фильтруем видео из scrapedData, принадлежащие новым русским каналам
+                                const newRussianChannelNames = new Set(russianMetrics.russianChannelList);
+                                const videosToCache = scrapedData.filter(video =>
+                                    newRussianChannelNames.has(video.channelName)
+                                );
+
+                                // Очищаем старый кэш и добавляем новые видео
+                                goldNicheVideos.length = 0; // Очищаем массив
+                                goldNicheVideos.push(...videosToCache);
+
+                                log(`✅ В кэш "золотых" ниш добавлено ${videosToCache.length} видео из ${newRussianChannelNames.size} каналов.`, { module: 'ParseRecommendation', level: 'success' });
+                            }
                         } catch (russianErr) {
                             log(`⚠️ Ошибка анализа русскости каналов: ${russianErr.message}`, { module: 'ParseRecommendation', level: 'warn' });
                         }
@@ -6034,6 +6350,7 @@ export const parseRecommendationScenario = {
                     // --- 5. Выбор следующего видео ---
                     let nextVideoId = null;
                     if (restartCounter >= 2) {
+                        restartCounter = 0;
                         log(`🚀 Счетчик перезапусков >= 2. Используем альтернативный выбор видео.`, { module: 'ParseRecommendation', level: 'warn' });
                         try {
                             // Получаем зависимости
@@ -6045,8 +6362,7 @@ export const parseRecommendationScenario = {
                             };
 
                             // Выбираем видео через selectVideoFromSingleVideoChannel
-                            nextVideoId = selectVideoFromSingleVideoChannel(dependencies, context);
-
+                            nextVideoId = selectVideoFromSingleVideoChannel(dependencies, context, true);
                             if (nextVideoId) {
                                 log(`🎯 Альтернативный выбор успешен: ${nextVideoId}`, { module: 'ParseRecommendation', level: 'success' });
                                 // 👇 Сбрасываем метрику
@@ -6232,6 +6548,91 @@ export const parseRecommendationScenario = {
 };
 
 === END FILE: D:\разработка\youtube-parser-os\scenarios\parse-recommendation.js ===
+
+--------------------------------------------------------------------------------
+
+=== START FILE: D:\разработка\youtube-parser-os\scenarios\parse-search-results.js ===
+
+// scenarios/parse-search-results.js
+
+import { logger } from '../background/background.js';
+import { tableAdapter } from '../background/background.js';
+import { parseAndHighlightSearch } from '../core/utils/search-parser.js';
+import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
+
+/**
+ * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
+ */
+export const parseSearchResultsScenario = {
+    id: 'parse-search-results',
+    name: 'Парсинг поисковой выдачи',
+    description: 'Парсит результаты поиска на YouTube и сохраняет данные.',
+    /**
+     * @param {import('../core/types/scenario.types.js').ScenarioContext} context
+     */
+    async execute(context) {
+        const { log, params = {}, tabId, abortSignal } = context;
+
+        // --- 1. Получаем поисковый запрос ---
+        // Поисковый запрос можно получить из URL текущей вкладки
+        let searchQuery = 'unknown_search';
+        if (typeof tabId === 'number' && tabId > 0) {
+            try {
+                const tab = await chrome.tabs.get(tabId);
+                const url = new URL(tab.url);
+                if (url.pathname === '/results') {
+                    searchQuery = url.searchParams.get('search_query') || 'unknown_search';
+                    // Декодируем URL-компонент
+                    searchQuery = decodeURIComponent(searchQuery.replace(/\+/g, ' '));
+                }
+            } catch (urlErr) {
+                log(`⚠️ Ошибка получения поискового запроса из URL: ${urlErr.message}`, { module: 'ParseSearchResults', level: 'warn' });
+            }
+        }
+        log(`🔍 Запущен сценарий "Парсинг поисковой выдачи" по запросу: "${searchQuery}"`, { module: 'ParseSearchResults' });
+
+        try {
+            // --- 2. Парсинг и подсветка ---
+            const parseResult = await parseAndHighlightSearch(context, searchQuery);
+            const scrapedData = parseResult.scrapedData || [];
+
+            if (scrapedData.length === 0) {
+                log(`⚠️ Парсинг не нашел ни одного видео.`, { module: 'ParseSearchResults', level: 'warn' });
+                return;
+            }
+
+            // --- 3. Сохранение данных в таблицу ---
+            log(`💾 Сохранение ${scrapedData.length} записей в таблицу...`, { module: 'ParseSearchResults' });
+            try {
+                const dataToSave = scrapedData.map(item => ({
+                    ...item,
+                    timestamp: Date.now()
+                }));
+                await tableAdapter.addBatch(dataToSave);
+                log(`✅ ${dataToSave.length} записей успешно сохранены в таблицу.`, { module: 'ParseSearchResults' });
+            } catch (saveErr) {
+                log(`❌ Ошибка сохранения данных в таблицу: ${saveErr.message}`, { module: 'ParseSearchResults', level: 'error' });
+            }
+
+            // --- 4. Обновление индексов IndexManager ---
+            log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseSearchResults' });
+            try {
+                updateIndexManager(scrapedData);
+                log(`✅ Индексы IndexManager успешно обновлены.`, { module: 'ParseSearchResults' });
+            } catch (indexUpdateErr) {
+                log(`❌ Ошибка обновления индексов IndexManager: ${indexUpdateErr.message}`, { module: 'ParseSearchResults', level: 'error' });
+            }
+
+            log(`🎉 Сценарий "Парсинг поисковой выдачи" завершен. Обработано ${scrapedData.length} видео.`, { module: 'ParseSearchResults', level: 'success' });
+
+        } catch (err) {
+            log(`❌ Критическая ошибка в сценарии "Парсинг поисковой выдачи": ${err.message}`, { module: 'ParseSearchResults', level: 'error' });
+            console.error("[ParseSearchResults] Stack trace:", err);
+        }
+    }
+};
+
+=== END FILE: D:\разработка\youtube-parser-os\scenarios\parse-search-results.js ===
 
 --------------------------------------------------------------------------------
 

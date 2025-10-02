@@ -236,5 +236,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // keep channel open for async response
     }
 
+    if (request.action === "parseAndHighlightSearch") {
+        console.log("[Content Script] === Получен запрос на парсинг поисковой выдачи ===");
+        const { searchQuery = 'unknown_search' } = request;
+        try {
+            const parsedCardElements = window.ytSearchParser.parseAndHighlight();
+            const scrapedData = window.ytSearchParser.scrapeCards(parsedCardElements, searchQuery);
+            sendResponse({
+                status: "success",
+                highlightedCount: parsedCardElements.length,
+                scrapedData: scrapedData
+            });
+        } catch (err) {
+            console.error("[Content Script] Ошибка парсинга поисковой выдачи:", err);
+            sendResponse({ status: "error", message: err.message });
+        }
+        return true;
+    }
     console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });
