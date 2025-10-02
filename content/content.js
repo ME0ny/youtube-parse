@@ -253,5 +253,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         return true;
     }
+
+    if (request.action === "navigateToUrl") {
+        console.log("[Content Script] Получена команда на переход по URL:", request.url);
+        (async () => {
+            try {
+                window.location.href = request.url;
+                sendResponse({ status: "success", message: `Переход инициирован` });
+            } catch (err) {
+                console.error("[Content Script] Ошибка перехода:", err);
+                sendResponse({ status: "error", message: err.message });
+            }
+        })();
+        return true;
+    }
+
     console.log("[Content Script] Неизвестное сообщение, игнорируем.");
 });

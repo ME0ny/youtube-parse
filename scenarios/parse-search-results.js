@@ -8,6 +8,8 @@ import { getStateSnapshot } from '../core/index-manager.js';
 import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
 import { calculateNewChannelsInIteration, calculateRussianChannelRatio } from '../core/utils/metrics.js';
 import { isLikelyRussian } from '../core/utils/video-selector.js';
+import { navigateToSearchQuery } from '../core/utils/navigator.js';
+import { selectNextSearchQuery } from '../core/utils/search-query-selector.js';
 
 function filterUniqueVideos(newVideos, existingVideoIds) {
     return newVideos.filter(video => !existingVideoIds.has(video.videoId));
@@ -151,22 +153,51 @@ export const parseSearchResultsScenario = {
                 log(`ℹ️ Нет новых видео для сохранения.`, { module: 'ParseSearchResults' });
             }
 
-            // --- 9. Принятие решения о продолжении ---
+            // --- 9. Принятие решения о продолжении (старая логика) ---
+            let shouldContinue = false;
             if (currentAverage >= 7) {
                 log(`✅ Среднее ≥7. Продолжаем парсинг.`, { module: 'ParseSearchResults', level: 'success' });
-                lowPerformanceCounter = 0; // сбрасываем счётчик низкой эффективности
-                continue;
+                lowPerformanceCounter = 0;
+                shouldContinue = true;
             } else if (currentAverage >= 5) {
                 lowPerformanceCounter++;
                 log(`⚠️ Среднее в диапазоне [5, 7). Счётчик: ${lowPerformanceCounter}/${MAX_LOW_PERF_ITERATIONS}`, { module: 'ParseSearchResults', level: 'warn' });
                 if (lowPerformanceCounter >= MAX_LOW_PERF_ITERATIONS) {
                     log(`⏹️ Достигнут лимит (${MAX_LOW_PERF_ITERATIONS}) итераций с низкой эффективностью. Завершение.`, { module: 'ParseSearchResults', level: 'warn' });
-                    break;
+                    shouldContinue = false;
+                } else {
+                    shouldContinue = true;
                 }
-                continue;
             } else {
                 log(`🛑 Среднее <5. Завершение сценария.`, { module: 'ParseSearchResults', level: 'error' });
-                break;
+                shouldContinue = false;
+            }
+
+            // --- 10. Если не продолжаем — пробуем перейти к новому поисковому запросу ---
+            if (!shouldContinue) {
+                log(`🔍 Попытка выбрать следующий поисковый запрос...`, { module: 'ParseSearchResults' });
+                const nextQuery = selectNextSearchQuery(scrapedData, getStateSnapshot(), log);
+                if (nextQuery) {
+                    log(`➡️ Переход к новому поисковому запросу: "${nextQuery}"`, { module: 'ParseSearchResults', level: 'info' });
+                    try {
+                        await navigateToSearchQuery(context, nextQuery);
+                        log(`⏳ Ожидание загрузки новой поисковой страницы...`, { module: 'ParseSearchResults' });
+                        // Ждём загрузки (можно улучшить через checkPageLoaded, но для MVP — таймаут)
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        // Сбрасываем счётчики для нового запроса
+                        russianChannelBuffer.length = 0;
+                        lowPerformanceCounter = 0;
+                        // Обновляем existingVideoIds (опционально)
+                        // Продолжаем цикл с новой страницы
+                        continue;
+                    } catch (navErr) {
+                        log(`❌ Не удалось перейти к новому запросу: ${navErr.message}`, { module: 'ParseSearchResults', level: 'error' });
+                        break;
+                    }
+                } else {
+                    log(`ℹ️ Нет следующего поискового запроса. Завершение сценария.`, { module: 'ParseSearchResults' });
+                    break;
+                }
             }
         }
 
