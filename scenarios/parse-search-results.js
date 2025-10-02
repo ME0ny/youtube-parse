@@ -4,7 +4,9 @@ import { logger } from '../background/background.js';
 import { tableAdapter } from '../background/background.js';
 import { parseAndHighlightSearch } from '../core/utils/search-parser.js';
 import { scrollPageNTimes } from '../core/utils/scroller.js';
+import { getStateSnapshot } from '../core/index-manager.js';
 import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
+import { calculateNewChannelsInIteration, calculateRussianChannelRatio } from '../core/utils/metrics.js';
 
 /**
  * @type {import('../core/types/scenario.types.js').ScenarioDefinition}
@@ -33,9 +35,9 @@ export const parseSearchResultsScenario = {
         }
         log(`🔍 Запущен сценарий "Парсинг поисковой выдачи" по запросу: "${searchQuery}"`, { module: 'ParseSearchResults' });
 
-        // --- 2. Скроллинг страницы (как в parse-recommendation) --- parseInt(params.count, 10) || 16
+        // --- 2. Скроллинг страницы ---parseInt(params.count, 10) || 16,
         const scrollParams = {
-            count: 64,
+            count: 5,
             delayMs: parseInt(params.delayMs, 10) || 1500,
             step: parseInt(params.step, 10) || 1000
         };
@@ -49,10 +51,39 @@ export const parseSearchResultsScenario = {
 
         if (scrapedData.length === 0) {
             log(`⚠️ Парсинг не нашел ни одного видео.`, { module: 'ParseSearchResults', level: 'warn' });
+            // 👇 Всё равно отправим 0 в popup
+            logger.updateMetric('russianChannelsInSearch', 0, { format: '0' });
             return;
         }
 
-        // --- 4. Сохранение данных ---
+        // --- 4. 🔍 АНАЛИЗ НОВЫХ РУССКИХ КАНАЛОВ ---
+        log(`📊 Анализ новых русскоязычных каналов в поисковой выдаче...`, { module: 'ParseSearchResults' });
+        try {
+            const indexSnapshot = getStateSnapshot();
+            const newChannelsResult = calculateNewChannelsInIteration(scrapedData, indexSnapshot.channelVideoCounts, log);
+
+            let russianChannelCount = 0;
+            if (newChannelsResult.newChannelCount > 0) {
+                const russianMetrics = calculateRussianChannelRatio(
+                    newChannelsResult.newChannelNames,
+                    scrapedData,
+                    log
+                );
+                russianChannelCount = russianMetrics.russianChannelCount;
+                log(`🇷🇺 Найдено новых русских каналов: ${russianChannelCount} из ${newChannelsResult.newChannelCount} новых.`, { module: 'ParseSearchResults', level: 'success' });
+            } else {
+                log(`ℹ️ Новых каналов не обнаружено.`, { module: 'ParseSearchResults' });
+            }
+
+            // 👇 ОТПРАВКА РЕЗУЛЬТАТА В POPUP
+            logger.updateMetric('russianChannelsInSearch', russianChannelCount, { format: '0' });
+
+        } catch (analysisErr) {
+            log(`❌ Ошибка анализа русскости каналов: ${analysisErr.message}`, { module: 'ParseSearchResults', level: 'error' });
+            logger.updateMetric('russianChannelsInSearch', 0, { format: '0' });
+        }
+
+        // --- 5. Сохранение данных ---
         log(`💾 Сохранение ${scrapedData.length} записей в таблицу...`, { module: 'ParseSearchResults' });
         try {
             const dataToSave = scrapedData.map(item => ({

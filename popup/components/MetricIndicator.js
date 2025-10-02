@@ -33,12 +33,15 @@ export class MetricIndicator {
      */
     handleUpdateMetric(detail) {
         if (!this.element) return;
-
+        console.log("handleUpdateMetric run");
         const { metricName, value, formattedValue } = detail;
 
         // Для метрики 'russianChannelAverage' обновляем индикатор
         if (metricName === 'russianChannelAverage') {
             this.updateRussianChannelIndicator(value, formattedValue);
+        } else if (metricName === 'russianChannelsInSearch') {
+            console.log("handleUpdateMetric ok");
+            this.updateSearchRussianIndicator(value, formattedValue);
         }
         // Можно добавить обработку других метрик здесь
     }
@@ -58,7 +61,7 @@ export class MetricIndicator {
         let statusClass = 'good';
         let displayText = `${formattedValue}`;
 
-        if (value > 7) {
+        if (value >= 7) {
             statusClass = 'good';
         } else if (value >= 5) {
             statusClass = 'warning';
@@ -70,5 +73,37 @@ export class MetricIndicator {
         this.element.classList.add(statusClass);
         // Обновляем текст
         this.element.textContent = displayText;
+    }
+
+    /**
+ * Обновляет индикатор количества русских каналов в поиске.
+ * @param {number} value
+ * @param {string} formattedValue
+ */
+    updateSearchRussianIndicator(value, formattedValue) {
+        console.log("updateSearchRussianIndicator run");
+        if (!this.element) return;
+
+        // Удаляем предыдущие классы состояния
+        this.element.classList.remove('good', 'warning', 'bad');
+
+        let statusClass = 'good';
+        let displayText = `${formattedValue}`;
+
+        // Определяем класс состояния
+        if (value >= 7) {
+            statusClass = 'good';
+        } else if (value >= 5) {
+            statusClass = 'warning';
+        } else {
+            statusClass = 'bad';
+        }
+        // (warning не используется для этой метрики)
+
+        // Применяем класс состояния
+        this.element.classList.add(statusClass);
+        // Обновляем текст
+        this.element.textContent = `🇷🇺 Поиск: ${formattedValue}`;
+        console.log("updateSearchRussianIndicator end");
     }
 }
