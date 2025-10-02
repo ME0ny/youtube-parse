@@ -96,5 +96,16 @@ export const parseSearchResultsScenario = {
         } catch (saveErr) {
             log(`❌ Ошибка сохранения данных: ${saveErr.message}`, { module: 'ParseSearchResults', level: 'error' });
         }
+
+        // --- 6. 🔄 ОБНОВЛЕНИЕ ИНДЕКСОВ IndexManager ---
+        log(`🔄 Обновление индексов IndexManager данными по ${scrapedData.length} видео...`, { module: 'ParseSearchResults' });
+        try {
+            updateIndexManager(scrapedData);
+            log(`✅ Индексы IndexManager успешно обновлены.`, { module: 'ParseSearchResults' });
+        } catch (indexUpdateErr) {
+            log(`❌ Ошибка обновления индексов IndexManager: ${indexUpdateErr.message}`, { module: 'ParseSearchResults', level: 'error' });
+        }
+
+        log(`🎉 Сценарий "Парсинг поисковой выдачи" завершен. Обработано ${scrapedData.length} видео.`, { module: 'ParseSearchResults', level: 'success' });
     }
 };
