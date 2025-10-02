@@ -7,6 +7,7 @@ import { testCountdownScenario } from '../scenarios/test-countdown.js';
 import { DexieTableAdapter } from '../adapters/DexieTableAdapter.js';
 import { prepareImportedDataIndices } from '../core/data-processor.js';
 import { parseRecommendationScenario } from '../scenarios/parse-recommendation.js';
+import { parseSearchResultsScenario } from '../scenarios/parse-search-results.js';
 import {
     initialize as initIndexManager,
     reset as resetIndexManager,
@@ -53,6 +54,7 @@ export const scenarioEngine = new ScenarioEngine();
 // 3. Регистрируем тестовый сценарий
 scenarioEngine.registerScenario(testCountdownScenario);
 scenarioEngine.registerScenario(parseRecommendationScenario);
+scenarioEngine.registerScenario(parseSearchResultsScenario);
 
 // --- Инициализация IndexManager ---
 // Вызывается один раз при запуске background script
@@ -225,7 +227,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     scenarioToRun = testCountdownScenario;
                     // } else if (scenarioId === '...') {
                     //     scenarioToRun = ...;
-                } else {
+                } else if (scenarioId === 'parse-search-results') { // <-- НОВАЯ СТРОКА
+                    scenarioToRun = parseSearchResultsScenario;       // <-- НОВАЯ СТРОКА
+                }
+                else {
                     throw new Error(`Неизвестный ID сценария: ${scenarioId}`);
                 }
 
