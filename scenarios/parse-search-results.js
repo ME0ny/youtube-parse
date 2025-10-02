@@ -7,6 +7,7 @@ import { scrollPageNTimes } from '../core/utils/scroller.js';
 import { getStateSnapshot } from '../core/index-manager.js';
 import { addScrapedData as updateIndexManager } from '../core/index-manager.js';
 import { calculateNewChannelsInIteration, calculateRussianChannelRatio } from '../core/utils/metrics.js';
+import { isLikelyRussian } from '../core/utils/video-selector.js';
 
 function filterUniqueVideos(newVideos, existingVideoIds) {
     return newVideos.filter(video => !existingVideoIds.has(video.videoId));
@@ -79,25 +80,43 @@ export const parseSearchResultsScenario = {
                 break; // завершаем, если ничего нет
             }
 
-            // --- 4. Анализ новых русских каналов ---
-            let russianChannelCount = 0;
+            // --- 4. 🔍 АНАЛИЗ РУССКИХ И НОВЫХ РУССКИХ КАНАЛОВ ---
+            log(`📊 Анализ русских каналов в поисковой выдаче...`, { module: 'ParseSearchResults' });
+
+            let totalRussianChannels = 0;
+            let newRussianChannelCount = 0;
+
             try {
                 const indexSnapshot = getStateSnapshot();
+
+                // --- 4.1. Сколько ВСЕХ русских каналов в текущей выборке? ---
+                const allChannelNames = new Set(scrapedData.map(v => v.channelName).filter(name => name && name !== 'Неизвестен'));
+                const russianChannelsAll = Array.from(allChannelNames).filter(channelName => {
+                    // Берём любое видео из этого канала для проверки
+                    const sampleVideo = scrapedData.find(v => v.channelName === channelName);
+                    return sampleVideo?.title && isLikelyRussian(sampleVideo.title);
+                });
+                totalRussianChannels = russianChannelsAll.length;
+
+                // --- 4.2. Сколько НОВЫХ каналов (вообще)? ---
                 const newChannelsResult = calculateNewChannelsInIteration(scrapedData, indexSnapshot.channelVideoCounts, log);
-                if (newChannelsResult.newChannelCount > 0) {
-                    const russianMetrics = calculateRussianChannelRatio(
-                        newChannelsResult.newChannelNames,
-                        scrapedData,
-                        log
-                    );
-                    russianChannelCount = russianMetrics.russianChannelCount;
+                const newChannelNames = newChannelsResult.newChannelNames;
+
+                // --- 4.3. Сколько из НОВЫХ — русские? ---
+                if (newChannelNames.size > 0) {
+                    const russianMetrics = calculateRussianChannelRatio(newChannelNames, scrapedData, log);
+                    newRussianChannelCount = russianMetrics.russianChannelCount;
                 }
-            } catch (e) {
-                log(`❌ Ошибка анализа русскости: ${e.message}`, { module: 'ParseSearchResults', level: 'error' });
+
+                log(`🇷🇺 Всего русских каналов в выдаче: ${totalRussianChannels}`, { module: 'ParseSearchResults', level: 'info' });
+                log(`🆕 Новых русских каналов: ${newRussianChannelCount} из ${newChannelsResult.newChannelCount} новых`, { module: 'ParseSearchResults', level: 'success' });
+
+            } catch (analysisErr) {
+                log(`❌ Ошибка анализа русскости каналов: ${analysisErr.message}`, { module: 'ParseSearchResults', level: 'error' });
             }
 
-            // --- 5. Обновляем буфер ---
-            russianChannelBuffer.push(russianChannelCount);
+            // --- 5. Обновляем буфер и метрику (только НОВЫЕ русские каналы) ---
+            russianChannelBuffer.push(newRussianChannelCount);
             if (russianChannelBuffer.length > BUFFER_SIZE) {
                 russianChannelBuffer.shift();
             }
