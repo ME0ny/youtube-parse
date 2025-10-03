@@ -1,17 +1,40 @@
 // core/utils/search-query-selector.js
+import { getStateSnapshot } from '../index-manager.js';
 
 /**
- * Выбирает следующий поисковый запрос на основе текущих данных.
- * Пока возвращает фиксированный запрос для тестирования.
- * @param {Array} scrapedData - Данные, полученные в текущей итерации.
- * @param {Object} indexSnapshot - Снимок индексов (visitedVideoIds, channelVideoCounts и т.д.)
- * @param {Function} log - Функция логирования.
- * @returns {string|null} Новый поисковый запрос или null, если не найден.
+ * Выбирает следующий непосещённый поисковый запрос.
+ * Посещённые запросы хранятся в visitedVideoIds (где sourceVideoId = запрос).
+ * @param {Array} scrapedData - не используется, но сохранён для совместимости
+ * @param {Object} indexSnapshot - снимок индексов
+ * @param {Function} log - логгер
+ * @returns {string|null}
  */
-export function selectNextSearchQuery(scrapedData, indexSnapshot, log) {
-    // TODO: Реализовать логику выбора запроса на основе каналов, трендов и т.д.
-    // Пока возвращаем фиксированный запрос для теста
-    const nextQuery = "Сочи";
-    log(`🔍 Выбран следующий поисковый запрос: "${nextQuery}"`, { module: 'SearchQuerySelector' });
-    return nextQuery;
+export async function selectNextSearchQuery(scrapedData, indexSnapshot, log) {
+    try {
+        const result = await chrome.storage.local.get(['searchQueries']);
+        const allQueries = result.searchQueries || [];
+
+        if (allQueries.length === 0) {
+            log(`ℹ️ Список поисковых запросов пуст.`, { module: 'SearchQuerySelector' });
+            return null;
+        }
+
+        // 👇 Используем НОВУЮ структуру
+        const visitedQueries = indexSnapshot.visitedSearchQueries;
+
+        for (const query of allQueries) {
+            const cleanQuery = query.trim();
+            if (cleanQuery && !visitedQueries.has(cleanQuery)) {
+                log(`✅ Найден непосещённый запрос: "${cleanQuery}"`, { module: 'SearchQuerySelector' });
+                return cleanQuery;
+            }
+        }
+
+        log(`ℹ️ Все ${allQueries.length} запросов уже посещены.`, { module: 'SearchQuerySelector' });
+        return null;
+
+    } catch (err) {
+        log(`❌ Ошибка выбора следующего запроса: ${err.message}`, { module: 'SearchQuerySelector', level: 'error' });
+        return null;
+    }
 }

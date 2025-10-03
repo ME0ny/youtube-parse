@@ -56,6 +56,17 @@
                         <button id="clearImportedBtn" class="btn btn-secondary">🗑️ Очистить импортированные</button>
                     </div>
                 </div>
+
+                <!-- Импорт списка поисковых запросов -->
+                <div class="setting-item">
+                    <label class="setting-label">Поисковые запросы (файл с ;):</label>
+                    <input type="file" id="searchQueriesFileInput" class="file-input" accept=".txt,.csv,.tsv">
+                    <div class="button-group">
+                        <button id="loadSearchQueriesBtn" class="btn btn-primary">📂 Загрузить запросы</button>
+                        <button id="clearSearchQueriesBtn" class="btn btn-secondary">🗑️ Очистить список</button>
+                    </div>
+                    <div id="searchQueriesStatus" class="setting-hint">Список запросов пуст.</div>
+                </div>
             </div>
         </section>
 

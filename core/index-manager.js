@@ -18,6 +18,8 @@ let channelToVideoIds = new Map();
 /** @type {Array<Object>} - Массив данных, извлеченных в ходе последнего парсинга. */
 let scrapedDataBuffer = [];
 
+let visitedSearchQueries = new Set();
+
 // --- 2. API для работы с индексами ---
 
 /**
@@ -75,6 +77,7 @@ export function reset() {
     channelVideoCounts.clear();
     channelToVideoIds.clear();
     scrapedDataBuffer = [];
+    visitedSearchQueries.clear();
     console.log("[IndexManager] Все индексы и буфер сброшены.");
 }
 
@@ -147,7 +150,8 @@ export function getStateSnapshot() {
         visitedVideoIds: new Set(visitedVideoIds),
         channelVideoCounts: new Map(channelVideoCounts),
         channelToVideoIds: new Map(Array.from(channelToVideoIds, ([k, v]) => [k, new Set(v)])),
-        scrapedDataBuffer: [...scrapedDataBuffer] // Копия массива
+        scrapedDataBuffer: [...scrapedDataBuffer], // Копия массива
+        visitedSearchQueries: new Set(visitedSearchQueries)
     };
 }
 
@@ -198,6 +202,14 @@ export function getTotalUniqueVideoCount() {
         total += videoIdsSet.size;
     }
     return total;
+}
+
+// Новый метод для добавления посещённого запроса
+export function markSearchQueryAsVisited(query) {
+    if (typeof query === 'string' && query.trim()) {
+        visitedSearchQueries.add(query.trim());
+        console.log(`[IndexManager] Запрос "${query}" отмечен как посещённый.`);
+    }
 }
 
 // Экспортируем также функции для получения самих структур, если нужно прямой доступ

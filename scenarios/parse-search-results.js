@@ -10,6 +10,7 @@ import { calculateNewChannelsInIteration, calculateRussianChannelRatio } from '.
 import { isLikelyRussian } from '../core/utils/video-selector.js';
 import { navigateToSearchQuery } from '../core/utils/navigator.js';
 import { selectNextSearchQuery } from '../core/utils/search-query-selector.js';
+import { markSearchQueryAsVisited } from '../core/index-manager.js';
 
 function filterUniqueVideos(newVideos, existingVideoIds) {
     return newVideos.filter(video => !existingVideoIds.has(video.videoId));
@@ -64,9 +65,9 @@ export const parseSearchResultsScenario = {
                 }
             }
 
-            // --- 2. Скроллинг ---
+            // --- 2. Скроллинг ---parseInt(params.count, 10) || 16
             const scrollParams = {
-                count: parseInt(params.count, 10) || 16,
+                count: 5,
                 delayMs: parseInt(params.delayMs, 10) || 1500,
                 step: parseInt(params.step, 10) || 1000
             };
@@ -176,11 +177,12 @@ export const parseSearchResultsScenario = {
             // --- 10. Если не продолжаем — пробуем перейти к новому поисковому запросу ---
             if (!shouldContinue) {
                 log(`🔍 Попытка выбрать следующий поисковый запрос...`, { module: 'ParseSearchResults' });
-                const nextQuery = selectNextSearchQuery(scrapedData, getStateSnapshot(), log);
+                const nextQuery = await selectNextSearchQuery(scrapedData, getStateSnapshot(), log);
                 if (nextQuery) {
                     log(`➡️ Переход к новому поисковому запросу: "${nextQuery}"`, { module: 'ParseSearchResults', level: 'info' });
                     try {
                         await navigateToSearchQuery(context, nextQuery);
+                        markSearchQueryAsVisited(nextQuery);
                         log(`⏳ Ожидание загрузки новой поисковой страницы...`, { module: 'ParseSearchResults' });
                         // Ждём загрузки (можно улучшить через checkPageLoaded, но для MVP — таймаут)
                         await new Promise(resolve => setTimeout(resolve, 3000));

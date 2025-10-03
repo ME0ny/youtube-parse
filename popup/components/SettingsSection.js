@@ -4,12 +4,16 @@ export class SettingsSection {
         this.toggleBtn = document.getElementById('toggleSettingsBtn');
         this.selectionModeRadios = document.querySelectorAll('input[name="selectionMode"]');
         this.iterationsInput = document.getElementById('iterationsInput');
-        // 👇 НОВОЕ: Сохраняем ссылку на input и кнопку
+
         this.importFileInput = document.getElementById('importFileInput');
         this.importDataBtn = document.getElementById('importDataBtn');
         this.clearImportedBtn = document.getElementById('clearImportedBtn');
 
-        // 👇 НОВОЕ: Временная переменная для хранения содержимого файла
+        this.searchQueriesFileInput = document.getElementById('searchQueriesFileInput');
+        this.loadSearchQueriesBtn = document.getElementById('loadSearchQueriesBtn');
+        this.clearSearchQueriesBtn = document.getElementById('clearSearchQueriesBtn');
+        this.searchQueriesStatus = document.getElementById('searchQueriesStatus');
+
         this.pendingFileContent = null;
         this.pendingFileName = null;
 
@@ -19,19 +23,21 @@ export class SettingsSection {
     init() {
         // Восстанавливаем состояние из localStorage
         this.restoreState();
+
         // Обработчики
         this.toggleBtn.addEventListener('click', () => this.toggle());
         this.selectionModeRadios.forEach(radio => {
             radio.addEventListener('change', () => this.saveState());
         });
         this.iterationsInput.addEventListener('change', () => this.saveState());
-        // 👇 НОВОЕ: Обработчик выбора файла — только сохраняет содержимое
         this.importFileInput.addEventListener('change', (event) => this.handleFileSelected(event));
-        // 👇 НОВОЕ: Обработчик кнопки импорта — запускает импорт
         this.importDataBtn.addEventListener('click', () => this.handleImport());
         this.clearImportedBtn.addEventListener('click', () => this.handleClearImported());
-        // Сохраняем при потере фокуса
         this.iterationsInput.addEventListener('blur', () => this.saveState());
+        this.loadSearchQueriesBtn.addEventListener('click', () => this.searchQueriesFileInput.click());
+        this.searchQueriesFileInput.addEventListener('change', (e) => this.handleSearchQueriesFileSelected(e));
+        this.clearSearchQueriesBtn.addEventListener('click', () => this.handleClearSearchQueries());
+        this.updateSearchQueriesStatus();
     }
 
     toggle() {
@@ -235,5 +241,53 @@ export class SettingsSection {
 
     dispatchEvent(type, detail) {
         document.dispatchEvent(new CustomEvent(type, { detail }));
+    }
+
+    async handleSearchQueriesFileSelected(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const text = e.target.result;
+                // Разделяем по ; и очищаем
+                const queries = text
+                    .split(';')
+                    .map(q => q.trim())
+                    .filter(q => q.length > 0);
+
+                if (queries.length === 0) {
+                    this.dispatchEvent('log', { message: '❌ Файл не содержит валидных запросов.', level: 'error' });
+                    return;
+                }
+
+                await chrome.storage.local.set({ searchQueries: queries });
+                this.updateSearchQueriesStatus(queries);
+                this.dispatchEvent('log', { message: `✅ Загружено ${queries.length} поисковых запросов.`, level: 'success' });
+            } catch (err) {
+                this.dispatchEvent('log', { message: `❌ Ошибка загрузки запросов: ${err.message}`, level: 'error' });
+            }
+        };
+        reader.readAsText(file);
+        event.target.value = ''; // сброс
+    }
+
+    async handleClearSearchQueries() {
+        await chrome.storage.local.set({ searchQueries: [] });
+        this.updateSearchQueriesStatus([]);
+        this.dispatchEvent('log', { message: '🗑️ Список поисковых запросов очищен.', level: 'info' });
+    }
+
+    async updateSearchQueriesStatus(queries = null) {
+        if (!queries) {
+            const res = await chrome.storage.local.get(['searchQueries']);
+            queries = res.searchQueries || [];
+        }
+        if (queries.length > 0) {
+            this.searchQueriesStatus.textContent = `Загружено запросов: ${queries.length}`;
+        } else {
+            this.searchQueriesStatus.textContent = 'Список запросов пуст.';
+        }
     }
 }
