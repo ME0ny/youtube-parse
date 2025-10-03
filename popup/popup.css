@@ -174,7 +174,7 @@ body {
 }
 
 /* Стиль для input[type="file"] */
-#importFileInput {
+.file-input {
     width: 100%;
     max-width: 100%;
     /* Полная ширина */
@@ -190,7 +190,7 @@ body {
     /* Курсор-указатель */
 }
 
-#importFileInput::-webkit-file-upload-button {
+.file-input::-webkit-file-upload-button {
     /* Стилизуем кнопку "Выбрать файл" внутри input */
     background-color: var(--primary);
     color: white;
@@ -202,7 +202,7 @@ body {
     font-weight: 500;
 }
 
-#importFileInput::-webkit-file-upload-button:hover {
+.file-input::-webkit-file-upload-button:hover {
     background-color: var(--primary-hover);
 }
 
