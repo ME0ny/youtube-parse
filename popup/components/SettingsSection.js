@@ -14,6 +14,7 @@ export class SettingsSection {
         this.clearSearchQueriesBtn = document.getElementById('clearSearchQueriesBtn');
         this.searchQueriesStatus = document.getElementById('searchQueriesStatus');
 
+        this.pendingSearchQueriesContent = null;
         this.pendingFileContent = null;
         this.pendingFileName = null;
 
@@ -34,7 +35,7 @@ export class SettingsSection {
         this.importDataBtn.addEventListener('click', () => this.handleImport());
         this.clearImportedBtn.addEventListener('click', () => this.handleClearImported());
         this.iterationsInput.addEventListener('blur', () => this.saveState());
-        this.loadSearchQueriesBtn.addEventListener('click', () => this.searchQueriesFileInput.click());
+        this.loadSearchQueriesBtn.addEventListener('click', () => this.handleLoadSearchQueries());
         this.searchQueriesFileInput.addEventListener('change', (e) => this.handleSearchQueriesFileSelected(e));
         this.clearSearchQueriesBtn.addEventListener('click', () => this.handleClearSearchQueries());
         this.updateSearchQueriesStatus();
@@ -245,37 +246,69 @@ export class SettingsSection {
 
     async handleSearchQueriesFileSelected(event) {
         const file = event.target.files[0];
-        if (!file) return;
+        if (!file) {
+            this.dispatchEvent('log', { message: '❌ Файл не выбран', level: 'error' });
+            return;
+        }
+
+        // Проверка типа
+        if (!file.name.endsWith('.txt') && !file.name.endsWith('.csv') && !file.name.endsWith('.tsv')) {
+            this.dispatchEvent('log', { message: '❌ Неподдерживаемый тип файла. Выберите .txt, .csv или .tsv', level: 'error' });
+            this.searchQueriesFileInput.value = '';
+            return;
+        }
 
         const reader = new FileReader();
-        reader.onload = async (e) => {
-            try {
-                const text = e.target.result;
-                // Разделяем по ; и очищаем
-                const queries = text
-                    .split(';')
-                    .map(q => q.trim())
-                    .filter(q => q.length > 0);
-
-                if (queries.length === 0) {
-                    this.dispatchEvent('log', { message: '❌ Файл не содержит валидных запросов.', level: 'error' });
-                    return;
-                }
-
-                await chrome.storage.local.set({ searchQueries: queries });
-                this.updateSearchQueriesStatus(queries);
-                this.dispatchEvent('log', { message: `✅ Загружено ${queries.length} поисковых запросов.`, level: 'success' });
-            } catch (err) {
-                this.dispatchEvent('log', { message: `❌ Ошибка загрузки запросов: ${err.message}`, level: 'error' });
-            }
+        reader.onload = (e) => {
+            this.pendingSearchQueriesContent = e.target.result;
+            this.dispatchEvent('log', {
+                message: `✅ Файл "${file.name}" выбран. Нажмите "Загрузить запросы" для импорта.`,
+                level: 'success'
+            });
+        };
+        reader.onerror = () => {
+            this.dispatchEvent('log', { message: `❌ Ошибка чтения файла: ${file.name}`, level: 'error' });
+            this.searchQueriesFileInput.value = '';
         };
         reader.readAsText(file);
-        event.target.value = ''; // сброс
+    }
+
+    async handleLoadSearchQueries() {
+        if (!this.pendingSearchQueriesContent) {
+            this.dispatchEvent('log', { message: '❌ Сначала выберите файл с запросами', level: 'error' });
+            return;
+        }
+
+        try {
+            const text = this.pendingSearchQueriesContent;
+            const queries = text
+                .split(';')
+                .map(q => q.trim())
+                .filter(q => q.length > 0);
+
+            if (queries.length === 0) {
+                this.dispatchEvent('log', { message: '❌ Файл не содержит валидных запросов.', level: 'error' });
+                return;
+            }
+
+            await chrome.storage.local.set({ searchQueries: queries });
+            this.updateSearchQueriesStatus(queries);
+            this.dispatchEvent('log', { message: `✅ Загружено ${queries.length} поисковых запросов.`, level: 'success' });
+
+            // Очищаем временные данные
+            this.pendingSearchQueriesContent = null;
+            this.searchQueriesFileInput.value = ''; // сброс input
+
+        } catch (err) {
+            this.dispatchEvent('log', { message: `❌ Ошибка загрузки запросов: ${err.message}`, level: 'error' });
+        }
     }
 
     async handleClearSearchQueries() {
         await chrome.storage.local.set({ searchQueries: [] });
         this.updateSearchQueriesStatus([]);
+        this.pendingSearchQueriesContent = null; // 👈 сброс временных данных
+        this.searchQueriesFileInput.value = '';  // 👈 сброс input
         this.dispatchEvent('log', { message: '🗑️ Список поисковых запросов очищен.', level: 'info' });
     }
 
