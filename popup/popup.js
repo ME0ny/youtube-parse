@@ -5,16 +5,32 @@ import { ControlSection } from './components/ControlSection.js';
 import { LogSection } from './components/LogSection.js';
 import { TableSection } from './components/TableSection.js';
 import { MetricIndicator } from './components/MetricIndicator.js';
+import { AuthSection } from './components/AuthSection.js';
 
 class PopupApp {
     constructor() {
+        this.authManager = null;
         this.initElements();
-        this.initComponents(); // Инициализируем компоненты и загружаем начальные данные
-        this.bindEvents(); // Привязываем события popup-контроллера
-        this.loadState(); // Загружаем сохранённое состояние UI
+        this.initAuthManager();
+        this.initComponents();
+        this.bindEvents();
+        this.loadState();
         this.updateScenarioControlButtons(false);
         this.checkScenarioStatusOnLoad();
         this.isScenarioLaunchInProgress = false;
+    }
+
+    async initAuthManager() {
+        // Получаем authManager из background через сообщение
+        // (т.к. в popup нет прямого доступа к модулям background)
+        try {
+            const response = await chrome.runtime.sendMessage({ action: 'auth:getSession' });
+            if (response?.status === 'success') {
+                console.log('[PopupApp] Auth session:', response.data);
+            }
+        } catch (e) {
+            console.warn('[PopupApp] Auth session check failed:', e);
+        }
     }
 
     initElements() {
@@ -35,6 +51,7 @@ class PopupApp {
         this.clearTableBtn = document.getElementById('clearTableBtn');
         this.clearLogBtn = document.getElementById('clearLogBtn');
 
+        this.auth = new AuthSection(this._createAuthManagerProxy());
         // Элемент для нового функционала
 
         this.scenarioSelector = document.getElementById('scenarioSelector');
@@ -44,7 +61,73 @@ class PopupApp {
         });
     }
 
+    _createAuthManagerProxy() {
+        const send = (action, data = {}) =>
+            chrome.runtime.sendMessage({ action, ...data });
+
+        const handleResponse = (r) => {
+            if (r.status === 'error') {
+                // 👇 Создаём ApiError с полной информацией
+                const err = new Error(r.message);
+                err.status = r.status;
+                err.errorCode = r.errorCode;
+                err.details = r.details;
+                err.toUserMessage = () => {
+                    if (r.errorCode === 'VALIDATION_ERROR' && Array.isArray(r.details)) {
+                        return r.details.map(e => `• ${(e.loc || []).filter(l => l !== 'body').join('.')}: ${e.msg}`).join('\n');
+                    }
+                    return r.message;
+                };
+                throw err;
+            }
+            return r.data;
+        };
+
+        return {
+            async registerMachine() {
+                return handleResponse(await send('auth:registerMachine'));
+            },
+            async registerUser(username, password) {
+                return handleResponse(await send('auth:registerUser', { username, password }));
+            },
+            async loginUser(username, password) {
+                return handleResponse(await send('auth:loginUser', { username, password }));
+            },
+            async loginMachine() {
+                return handleResponse(await send('auth:loginMachine'));
+            },
+            async logout() {
+                return handleResponse(await send('auth:logout'));
+            },
+            async getSessionInfo() {
+                return handleResponse(await send('auth:getSession'));
+            },
+            async getStoredCredentials() {
+                const session = await this.getSessionInfo();
+                return {
+                    clientId: session.clientId,
+                    clientSecret: null,
+                    username: session.username,
+                    authType: session.authType
+                };
+            },
+            async setBaseUrl(url) {
+                return handleResponse(await send('auth:setBaseUrl', { url }));
+            }
+        };
+    }
+
     initComponents() {
+        console.log('[PopupApp] Инициализация компонентов...');
+
+        // НОВОЕ: AuthSection
+        try {
+            console.log('[PopupApp] Создание AuthSection...');
+            this.auth = new AuthSection(this._createAuthManagerProxy());
+            console.log('[PopupApp] ✅ AuthSection создан');
+        } catch (e) {
+            console.error('[PopupApp] ❌ Ошибка создания AuthSection:', e);
+        }
         // Создаём экземпляры компонентов. Они сами привяжут свои обработчики и DOM.
         this.settings = new SettingsSection();
         this.control = new ControlSection();

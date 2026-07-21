@@ -14,8 +14,10 @@ import {
     getStateSnapshot,
     addScrapedData as updateIndexManagerWithData
 } from '../core/index-manager.js';
+import { AuthManager } from '../core/auth-manager.js';
 
 // --- Инициализация нового функционала ---
+export const authManager = new AuthManager();
 // 1. Создаем экземпляр логгера
 export const logger = new Logger({
     maxSize: 1000,
@@ -56,6 +58,17 @@ scenarioEngine.registerScenario(testCountdownScenario);
 scenarioEngine.registerScenario(parseRecommendationScenario);
 scenarioEngine.registerScenario(parseSearchResultsScenario);
 
+// Инициализация при старте
+(async () => {
+    try {
+        await authManager.initialize();
+        const session = await authManager.getSessionInfo();
+        console.log('[Background] AuthManager initialized. Authenticated:', session.isAuthenticated);
+    } catch (e) {
+        console.error('[Background] AuthManager init error:', e);
+    }
+})();
+
 // --- Инициализация IndexManager ---
 // Вызывается один раз при запуске background script
 async function initializeBackgroundState() {
@@ -87,6 +100,120 @@ initializeBackgroundState().catch(err => {
 
 // --- Обработка сообщений от popup ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+
+    if (request.action === 'auth:registerUser') {
+        const { username, password } = request;
+        (async () => {
+            try {
+                logger.info(`📥 Запрос регистрации user account: ${username}`, { module: 'Auth' });
+                const result = await authManager.registerUser(username, password);
+                logger.success(`✅ User account зарегистрирован: ${username} (client_id: ${result.client_id})`, { module: 'Auth' });
+                sendResponse({ status: 'success', data: result });
+            } catch (e) {
+                // 👇 ЛОГИРУЕМ ошибку в журнал
+                const errorMsg = e.message || String(e);
+                logger.error(`❌ Ошибка регистрации user account "${username}": ${errorMsg}`, {
+                    module: 'Auth',
+                    meta: { status: e.status, errorCode: e.errorCode, details: e.details }
+                });
+                sendResponse({
+                    status: 'error',
+                    message: e.message,
+                    errorCode: e.errorCode,
+                    details: e.details
+                });
+            }
+        })();
+        return true;
+    }
+
+    if (request.action === 'auth:registerMachine') {
+        console.log('[Background] 📥 Запрос регистрации machine account');
+        (async () => {
+            try {
+                logger.info(`📥 Запрос регистрации machine account`, { module: 'Auth' });
+                const result = await authManager.registerMachine();
+                logger.success(`✅ Machine account зарегистрирован: ${result.client_id}`, { module: 'Auth' });
+                console.log('[Background] ✅ Результат:', result);
+                sendResponse({ status: 'success', data: result });
+            } catch (e) {
+                console.error('[Background] ❌ Ошибка:', e);
+                logger.error(`❌ Ошибка регистрации machine account: ${e.message}`, {
+                    module: 'Auth',
+                    meta: { status: e.status, errorCode: e.errorCode }
+                });
+                sendResponse({ status: 'error', message: e.message, errorCode: e.errorCode });
+            }
+        })();
+        return true;
+    }
+
+    if (request.action === 'auth:loginUser') {
+        const { username, password } = request;
+        (async () => {
+            try {
+                logger.info(`📥 Запрос входа user account: ${username}`, { module: 'Auth' });
+                const result = await authManager.loginUser(username, password);
+                logger.success(`✅ User login успешен: ${username}`, { module: 'Auth' });
+                sendResponse({ status: 'success', data: result });
+            } catch (e) {
+                logger.error(`❌ Ошибка входа user account "${username}": ${e.message}`, {
+                    module: 'Auth',
+                    meta: { status: e.status, errorCode: e.errorCode }
+                });
+                sendResponse({ status: 'error', message: e.message, errorCode: e.errorCode });
+            }
+        })();
+        return true;
+    }
+
+    if (request.action === 'auth:loginMachine') {
+        (async () => {
+            try {
+                logger.info('📥 Запрос входа по machine credentials', { module: 'Auth' });
+                const creds = await authManager.getStoredCredentials();
+                if (!creds.clientId || !creds.clientSecret) {
+                    logger.warn('⚠️ Нет сохранённых machine credentials', { module: 'Auth' });
+                    sendResponse({ status: 'error', message: 'No stored credentials' });
+                    return;
+                }
+                const result = await authManager.loginMachine(creds.clientId, creds.clientSecret);
+                logger.success(`✅ Machine login успешен: ${creds.clientId}`, { module: 'Auth' });
+                sendResponse({ status: 'success', data: result });
+            } catch (e) {
+                logger.error(`❌ Ошибка machine login: ${e.message}`, {
+                    module: 'Auth',
+                    meta: { status: e.status, errorCode: e.errorCode }
+                });
+                sendResponse({ status: 'error', message: e.message, errorCode: e.errorCode });
+            }
+        })();
+        return true;
+    }
+
+    if (request.action === 'auth:logout') {
+        (async () => {
+            try {
+                await authManager.logout();
+                sendResponse({ status: 'success' });
+            } catch (e) {
+                sendResponse({ status: 'error', message: e.message });
+            }
+        })();
+        return true;
+    }
+
+    if (request.action === 'auth:getSession') {
+        (async () => {
+            try {
+                const session = await authManager.getSessionInfo();
+                sendResponse({ status: 'success', data: session });
+            } catch (e) {
+                sendResponse({ status: 'error', message: e.message });
+            }
+        })();
+        return true;
+    }
 
     if (request.type === "contentLog") {
         console.log("[Background] Получен лог от content script:", request);

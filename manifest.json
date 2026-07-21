@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "YouTube Рекомендации Парсер OS",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "description": "Новый архитектурный фундамент для парсинга YouTube.",
     "icons": {
         "16": "icons/icon16.png"
@@ -39,6 +39,7 @@
         "tabs"
     ],
     "host_permissions": [
-        "*://*.youtube.com/*"
+        "*://*.youtube.com/*",
+        "http://localhost:8000/*"
     ]
 }

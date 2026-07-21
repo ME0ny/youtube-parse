@@ -14,6 +14,88 @@
             <h1 class="app-title">📹 YouTube Рекомендации Парсер</h1>
         </header>
 
+        <!-- 🔐 НОВАЯ СЕКЦИЯ: Авторизация -->
+        <section id="authSection" class="section auth-section">
+            <div class="section-header">
+                <h2 class="section-title">🔐 Авторизация</h2>
+            </div>
+            <div id="authContent" class="section-content">
+                <!-- Статус (когда авторизован) -->
+                <div id="authStatus" class="auth-status" style="display:none;">
+                    <div class="auth-status-row">
+                        <span id="authStatusText" class="auth-status-text">✅ Авторизован</span>
+                        <span id="authAccountType" class="auth-account-type">🤖 Machine account</span>
+                    </div>
+                    <div class="auth-machine-id">
+                        <small>Machine ID: <code id="authMachineId">—</code></small>
+                    </div>
+                    <button id="authLogoutBtn" class="btn btn-danger">🚪 Выйти</button>
+                </div>
+
+                <!-- Формы (когда НЕ авторизован) -->
+                <div id="authForms" class="auth-forms">
+                    <!-- Быстрый вход -->
+                    <div id="authQuickLoginBlock" class="auth-quick-login" style="display:none;">
+                        <div id="authQuickLoginInfo" class="auth-quick-info">🤖 Сохранённые credentials найдены</div>
+                        <button id="authQuickRegisterBtn" class="btn btn-success">🔄 Войти по сохранённым</button>
+                    </div>
+
+                    <!-- Вкладки -->
+                    <div class="auth-tabs">
+                        <button id="authTab-register" class="auth-tab active" data-form="register">📝
+                            Регистрация</button>
+                        <button id="authTab-login" class="auth-tab" data-form="login">🔑 Вход</button>
+                    </div>
+
+                    <!-- Форма регистрации -->
+                    <div id="authRegisterBlock" class="auth-form-block">
+                        <h4>Автоматическая регистрация (Machine account)</h4>
+                        <p class="auth-hint">Создаст аккаунт, привязанный к этому устройству. Не требует
+                            username/password.</p>
+                        <button id="authMachineRegisterBtn" class="btn btn-primary"
+                            style="width:100%; margin-bottom: 12px;">🤖 Зарегистрировать Machine account</button>
+
+                        <hr class="auth-divider">
+
+                        <h4>Ручная регистрация (User account)</h4>
+                        <p class="auth-hint">С username/password — можно войти с другого устройства.</p>
+                        <div class="auth-form-row">
+                            <input type="text" id="authRegUsernameInput" class="input-field"
+                                placeholder="Username (3-50 символов)">
+                            <input type="password" id="authRegPasswordInput" class="input-field"
+                                placeholder="Password (мин. 8 символов)">
+                            <button id="authUserRegisterBtn" class="btn btn-primary" style="width:100%;">👤
+                                Зарегистрировать User account</button>
+                        </div>
+                    </div>
+
+                    <!-- Форма входа -->
+                    <div id="authLoginBlock" class="auth-form-block" style="display:none;">
+                        <h4>Вход по username/password</h4>
+                        <div class="auth-form-row">
+                            <input type="text" id="authUsernameInput" class="input-field" placeholder="Username">
+                            <input type="password" id="authPasswordInput" class="input-field" placeholder="Password">
+                            <button id="authUserLoginBtn" class="btn btn-primary" style="width:100%;">🔑 Войти</button>
+                        </div>
+                    </div>
+
+                    <!-- Настройки API -->
+                    <details class="auth-api-settings">
+                        <summary>⚙️ Настройки API</summary>
+                        <div class="auth-form-row" style="margin-top: 8px;">
+                            <input type="text" id="authApiUrlInput" class="input-field" placeholder="API URL"
+                                value="http://localhost:8000/v1" style="flex: 1;">
+                            <button id="authSaveApiUrlBtn" class="btn btn-secondary">💾</button>
+                        </div>
+                    </details>
+                </div>
+
+                <!-- Loader -->
+                <div id="authLoader" class="auth-loader" style="display:none;">⏳ Загрузка...</div>
+            </div>
+            .
+        </section>
+
         <!-- Настройки (Collapsible) -->
         <section id="settingsSection" class="section settings-section">
             <div class="section-header">

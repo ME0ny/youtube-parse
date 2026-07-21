@@ -460,3 +460,145 @@ body {
     background-color: var(--danger);
     /* Красный */
 }
+
+/* === Auth Section === */
+.auth-section {
+    background: linear-gradient(135deg, #f0f4ff 0%, #e8f0fe 100%);
+    border: 2px solid var(--primary);
+}
+
+.auth-status {
+    padding: 12px;
+    background: white;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+
+.auth-status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.auth-status-text {
+    font-weight: 600;
+    color: var(--success);
+    font-size: 14px;
+}
+
+.auth-account-type {
+    font-size: 12px;
+    color: var(--secondary);
+}
+
+.auth-machine-id {
+    margin-bottom: 12px;
+    color: var(--secondary);
+    font-size: 11px;
+}
+
+.auth-machine-id code {
+    background: var(--card);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+}
+
+.auth-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.auth-tab {
+    flex: 1;
+    padding: 8px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--secondary);
+    transition: all 0.2s;
+}
+
+.auth-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+    font-weight: 600;
+}
+
+.auth-form-block {
+    background: white;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+
+.auth-form-block h4 {
+    font-size: 13px;
+    margin-bottom: 6px;
+    color: var(--text);
+}
+
+.auth-hint {
+    font-size: 11px;
+    color: var(--secondary);
+    margin-bottom: 8px;
+}
+
+.auth-form-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.auth-form-row .input-field {
+    flex: 1;
+    min-width: 120px;
+    max-width: none;
+}
+
+.auth-divider {
+    margin: 12px 0;
+    border: none;
+    border-top: 1px dashed var(--border);
+}
+
+.auth-quick-login {
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+    padding: 10px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.auth-quick-info {
+    font-size: 12px;
+    color: #155724;
+    font-weight: 500;
+}
+
+.auth-api-settings {
+    margin-top: 12px;
+    font-size: 12px;
+}
+
+.auth-api-settings summary {
+    cursor: pointer;
+    padding: 6px;
+    color: var(--secondary);
+}
+
+.auth-loader {
+    text-align: center;
+    padding: 12px;
+    color: var(--primary);
+    font-weight: 500;
+}
