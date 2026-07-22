@@ -40,6 +40,9 @@
     ],
     "host_permissions": [
         "*://*.youtube.com/*",
-        "http://localhost:8000/*"
+        "http://localhost:8000/*",
+        "http://192.168.0.15:8000/*",
+        "http://*/*",
+        "https://*/*"
     ]
 }

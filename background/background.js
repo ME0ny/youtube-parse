@@ -215,6 +215,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === 'auth:setBaseUrl') {
+        (async () => {
+            try {
+                const { url } = request;
+                if (!url) {
+                    sendResponse({ status: 'error', message: 'URL не может быть пустым' });
+                    return;
+                }
+                // Убираем trailing slash, если он есть, для единообразия
+                const cleanUrl = url.replace(/\/+$/, '');
+                await authManager.setBaseUrl(cleanUrl);
+                logger.info(`✅ API Base URL изменён на: ${cleanUrl}`, { module: 'Auth' });
+                sendResponse({ status: 'success' });
+            } catch (e) {
+                logger.error(`❌ Ошибка сохранения API URL: ${e.message}`, { module: 'Auth' });
+                sendResponse({ status: 'error', message: e.message });
+            }
+        })();
+        return true; // Обязательно для асинхронного sendResponse
+    }
+
     if (request.type === "contentLog") {
         console.log("[Background] Получен лог от content script:", request);
         // Перенаправляем лог в наш logger
